@@ -9,8 +9,8 @@ import {
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
+import { ThemeProvider } from "../context/ThemeContext"; // TEMA MOTORUNU IMPORT ETTİK
 
-// Fontlar yüklenene kadar Splash ekranını tut
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
@@ -31,12 +31,15 @@ export default function RootLayout() {
   if (!loaded && !error) return null;
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      {/* Uygulamanın ilk açılış ekranı (app/index.js) */}
-      <Stack.Screen name="index" options={{ animation: "fade" }} />
-
-      {/* Ana uygulama sayfaları (app/(tabs)/...) */}
-      <Stack.Screen name="(tabs)" options={{ animation: "slide_from_right" }} />
-    </Stack>
+    // TÜM UYGULAMAYI THEME PROVIDER İLE SARIYORUZ
+    <ThemeProvider>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="index" options={{ animation: "fade" }} />
+        <Stack.Screen
+          name="(tabs)"
+          options={{ animation: "slide_from_right" }}
+        />
+      </Stack>
+    </ThemeProvider>
   );
 }

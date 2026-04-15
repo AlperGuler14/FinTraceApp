@@ -7,18 +7,28 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
-  ScrollView,
+  ScrollView, // Switch eklendi
+  StatusBar,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
-// Kendi Supabase yoluna göre kontrol et
 import { supabase } from "../../constants/Supabase";
+import { useTheme } from "../../context/ThemeContext"; // Tema Motoru eklendi
 
 const { width } = Dimensions.get("window");
 
-const PremiumMenuItem = ({ icon, title, isDanger = false, onPress }) => (
+// Dinamik tema alan MenuItem
+const PremiumMenuItem = ({
+  icon,
+  title,
+  isDanger = false,
+  onPress,
+  theme,
+  rightElement = null,
+}: any) => (
   <TouchableOpacity
     style={styles.menuItem}
     activeOpacity={0.7}
@@ -30,44 +40,54 @@ const PremiumMenuItem = ({ icon, title, isDanger = false, onPress }) => (
     <View
       style={[
         styles.menuIconBox,
-        isDanger
-          ? { backgroundColor: "#fef2f2" }
-          : { backgroundColor: "#f8fafc" },
+        { backgroundColor: isDanger ? "rgba(239,68,68,0.15)" : theme.iconBg },
       ]}
     >
-      <Feather name={icon} size={20} color={isDanger ? "#ef4444" : "#1e293b"} />
+      <Feather
+        name={icon}
+        size={20}
+        color={isDanger ? "#ef4444" : theme.textMain}
+      />
     </View>
-    <Text style={[styles.menuTitle, isDanger && { color: "#ef4444" }]}>
+    <Text
+      style={[
+        styles.menuTitle,
+        { color: isDanger ? "#ef4444" : theme.textMain },
+      ]}
+    >
       {title}
     </Text>
-    <Feather name="chevron-right" size={20} color="#cbd5e1" />
+    {/* Eğer sağda özel bir element (Örn: Switch) varsa onu göster, yoksa standart ok ikonunu göster */}
+    {rightElement ? (
+      rightElement
+    ) : (
+      <Feather name="chevron-right" size={20} color={theme.textSub} />
+    )}
   </TouchableOpacity>
 );
 
 export default function ProfileScreen() {
+  const { isDark, toggleTheme, colors: theme } = useTheme(); // Temayı çekiyoruz
+
   const [userName, setUserName] = useState("Alper");
   const [userInitial, setUserInitial] = useState("A");
   const [monthlyTxCount, setMonthlyTxCount] = useState(0);
   const [activeWalletCount, setActiveWalletCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  // Veritabanından Kullanıcı ve İstatistik Verilerini Çek
   const fetchProfileData = async () => {
     setLoading(true);
     try {
-      // 1. Kullanıcı Bilgisi Çekimi
       const { data: authData } = await supabase.auth.getUser();
       const user = authData?.user;
 
       if (user) {
-        // Eğer Auth tarafında metadata(isim) kaydettiysen onu al, yoksa e-posta başını al
         const name =
           user.user_metadata?.name || user.email?.split("@")[0] || "Alper";
         setUserName(name.charAt(0).toUpperCase() + name.slice(1));
         setUserInitial(name.charAt(0).toUpperCase());
       }
 
-      // 2. Bu Ayki İşlem Sayısını Hesapla (Ayın ilk gününü buluyoruz)
       const now = new Date();
       const firstDayOfMonth = new Date(
         now.getFullYear(),
@@ -75,19 +95,16 @@ export default function ProfileScreen() {
         1,
       ).toISOString();
 
-      const { count: txCount, error: txError } = await supabase
+      const { count: txCount } = await supabase
         .from("islemler")
         .select("*", { count: "exact", head: true })
-        .gte("tarih", firstDayOfMonth); // Sadece bu ayın işlemlerini say
+        .gte("tarih", firstDayOfMonth);
+      if (txCount !== null) setMonthlyTxCount(txCount);
 
-      if (!txError) setMonthlyTxCount(txCount || 0);
-
-      // 3. Aktif Cüzdan (Zarf) Sayısını Çek
-      const { count: walletCount, error: walletError } = await supabase
-        .from("butceler")
-        .select("*", { count: "exact", head: true });
-
-      if (!walletError) setActiveWalletCount(walletCount || 0);
+      const { count: walletCount } = await supabase
+        .from("wallets")
+        .select("*", { count: "exact", head: true }); // 'butceler' yerine 'wallets' tablosu kullanıldığı varsayıldı
+      if (walletCount !== null) setActiveWalletCount(walletCount);
     } catch (error) {
       console.error("Profil verisi çekilirken hata:", error);
     } finally {
@@ -101,7 +118,6 @@ export default function ProfileScreen() {
     }, []),
   );
 
-  // Güvenli Çıkış İşlemi
   const handleLogout = async () => {
     Alert.alert(
       "Güvenli Çıkış",
@@ -113,12 +129,9 @@ export default function ProfileScreen() {
           style: "destructive",
           onPress: async () => {
             const { error } = await supabase.auth.signOut();
-            if (error) {
+            if (error)
               Alert.alert("Hata", "Çıkış yapılamadı: " + error.message);
-            } else {
-              // Çıkış başarılıysa Onboarding/Login (index) ekranına yönlendir
-              router.replace("/");
-            }
+            else router.replace("/");
           },
         },
       ],
@@ -126,9 +139,11 @@ export default function ProfileScreen() {
   };
 
   return (
-    <View style={styles.mainContainer}>
+    <View style={[styles.mainContainer, { backgroundColor: theme.bg }]}>
+      <StatusBar barStyle="light-content" />{" "}
+      {/* Header gradient mavi olduğu için statüs barı beyaz */}
       <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-        {/* Devasa Üst Renk Geçişi */}
+        {/* Üst Renk Geçişi - Burası hep canlı mavi kalacak */}
         <LinearGradient
           colors={["#3730a3", "#4f46e5"]}
           style={styles.headerGradient}
@@ -137,7 +152,9 @@ export default function ProfileScreen() {
         >
           <View style={styles.profileInfoContainer}>
             <View style={styles.avatarBorder}>
-              <View style={styles.avatarInner}>
+              <View
+                style={[styles.avatarInner, { backgroundColor: theme.cardBg }]}
+              >
                 <Text style={styles.avatarText}>{userInitial}</Text>
               </View>
             </View>
@@ -149,31 +166,62 @@ export default function ProfileScreen() {
           </View>
         </LinearGradient>
 
-        {/* Alt Menülerin Bulunduğu Kısım */}
-        <View style={styles.contentContainer}>
-          <View style={styles.statsRow}>
+        <View style={[styles.contentContainer, { backgroundColor: theme.bg }]}>
+          {/* İstatistikler */}
+          <View
+            style={[
+              styles.statsRow,
+              {
+                backgroundColor: theme.cardBg,
+                shadowColor: isDark ? "#000" : "#cbd5e1",
+              },
+            ]}
+          >
             <View style={styles.statBox}>
               {loading ? (
-                <ActivityIndicator color="#4f46e5" size="small" />
+                <ActivityIndicator color={theme.primary} size="small" />
               ) : (
-                <Text style={styles.statValue}>{monthlyTxCount}</Text>
+                <Text style={[styles.statValue, { color: theme.textMain }]}>
+                  {monthlyTxCount}
+                </Text>
               )}
-              <Text style={styles.statLabel}>Bu Ayki İşlem</Text>
+              <Text style={[styles.statLabel, { color: theme.textSub }]}>
+                Bu Ayki İşlem
+              </Text>
             </View>
-            <View style={styles.statDivider} />
+            <View
+              style={[styles.statDivider, { backgroundColor: theme.border }]}
+            />
             <View style={styles.statBox}>
               {loading ? (
-                <ActivityIndicator color="#4f46e5" size="small" />
+                <ActivityIndicator color={theme.primary} size="small" />
               ) : (
-                <Text style={styles.statValue}>{activeWalletCount}</Text>
+                <Text style={[styles.statValue, { color: theme.textMain }]}>
+                  {activeWalletCount}
+                </Text>
               )}
-              <Text style={styles.statLabel}>Aktif Cüzdan</Text>
+              <Text style={[styles.statLabel, { color: theme.textSub }]}>
+                Aktif Zarf
+              </Text>
             </View>
           </View>
 
-          <Text style={styles.sectionTitle}>HESAP AYARLARI</Text>
-          <View style={styles.menuCard}>
+          {/* HESAP AYARLARI */}
+          <Text style={[styles.sectionTitle, { color: theme.textSub }]}>
+            HESAP AYARLARI
+          </Text>
+          <View
+            style={[
+              styles.menuCard,
+              {
+                backgroundColor: theme.cardBg,
+                borderColor: theme.border,
+                borderWidth: isDark ? 1 : 0,
+              },
+            ]}
+          >
             <PremiumMenuItem
+              theme={theme}
               icon="user"
               title="Kişisel Bilgiler"
               onPress={() =>
@@ -183,16 +231,22 @@ export default function ProfileScreen() {
                 )
               }
             />
-            <View style={styles.menuDivider} />
+            <View
+              style={[styles.menuDivider, { backgroundColor: theme.border }]}
+            />
             <PremiumMenuItem
+              theme={theme}
               icon="shield"
               title="Güvenlik ve Şifre"
               onPress={() =>
                 Alert.alert("Yakında", "Şifre değiştirme ekranı eklenecek.")
               }
             />
-            <View style={styles.menuDivider} />
+            <View
+              style={[styles.menuDivider, { backgroundColor: theme.border }]}
+            />
             <PremiumMenuItem
+              theme={theme}
               icon="bell"
               title="Bildirim Tercihleri"
               onPress={() =>
@@ -201,15 +255,41 @@ export default function ProfileScreen() {
             />
           </View>
 
-          <Text style={styles.sectionTitle}>UYGULAMA</Text>
-          <View style={styles.menuCard}>
+          {/* UYGULAMA AYARLARI */}
+          <Text style={[styles.sectionTitle, { color: theme.textSub }]}>
+            UYGULAMA
+          </Text>
+          <View
+            style={[
+              styles.menuCard,
+              {
+                backgroundColor: theme.cardBg,
+                borderColor: theme.border,
+                borderWidth: isDark ? 1 : 0,
+              },
+            ]}
+          >
+            {/* KARANLIK MOD ANAHTARI BURADA */}
             <PremiumMenuItem
-              icon="moon"
-              title="Görünüm (Karanlık Mod)"
-              onPress={() => Alert.alert("Yakında", "Tema seçici eklenecek.")}
+              theme={theme}
+              icon={isDark ? "moon" : "sun"}
+              title="Karanlık Mod"
+              onPress={toggleTheme} // Satıra tıklanınca da değişir
+              rightElement={
+                <Switch
+                  trackColor={{ false: "#767577", true: theme.primary }}
+                  thumbColor={"#f4f3f4"}
+                  onValueChange={toggleTheme}
+                  value={isDark}
+                />
+              }
             />
-            <View style={styles.menuDivider} />
+
+            <View
+              style={[styles.menuDivider, { backgroundColor: theme.border }]}
+            />
             <PremiumMenuItem
+              theme={theme}
               icon="help-circle"
               title="Yardım Merkezi"
               onPress={() =>
@@ -219,8 +299,11 @@ export default function ProfileScreen() {
                 )
               }
             />
-            <View style={styles.menuDivider} />
+            <View
+              style={[styles.menuDivider, { backgroundColor: theme.border }]}
+            />
             <PremiumMenuItem
+              theme={theme}
               icon="log-out"
               title="Güvenli Çıkış"
               isDanger={true}
@@ -228,16 +311,17 @@ export default function ProfileScreen() {
             />
           </View>
 
-          <Text style={styles.versionText}>FinTrace v1.0.0</Text>
+          <Text style={[styles.versionText, { color: theme.textSub }]}>
+            FinTrace v1.0.0
+          </Text>
         </View>
       </ScrollView>
     </View>
   );
 }
 
-// ... Stiller orijinal halindekiyle birebir aynı bırakıldı
 const styles = StyleSheet.create({
-  mainContainer: { flex: 1, backgroundColor: "#f8fafc" },
+  mainContainer: { flex: 1 },
   headerGradient: {
     height: 320,
     width: "100%",
@@ -259,7 +343,6 @@ const styles = StyleSheet.create({
     width: 86,
     height: 86,
     borderRadius: 43,
-    backgroundColor: "#ffffff",
     justifyContent: "center",
     alignItems: "center",
     elevation: 10,
@@ -288,7 +371,6 @@ const styles = StyleSheet.create({
 
   contentContainer: {
     flex: 1,
-    backgroundColor: "#f8fafc",
     borderTopLeftRadius: 30,
     borderTopRightRadius: 30,
     marginTop: -40,
@@ -298,36 +380,27 @@ const styles = StyleSheet.create({
   },
   statsRow: {
     flexDirection: "row",
-    backgroundColor: "#ffffff",
     borderRadius: 20,
     paddingVertical: 20,
     marginBottom: 30,
     elevation: 4,
-    shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.05,
     shadowRadius: 10,
   },
   statBox: { flex: 1, alignItems: "center" },
-  statValue: {
-    fontSize: 22,
-    fontFamily: "Inter_900Black",
-    color: "#1e293b",
-    marginBottom: 4,
-  },
-  statLabel: { fontSize: 12, fontFamily: "Inter_500Medium", color: "#64748b" },
-  statDivider: { width: 1, backgroundColor: "#e2e8f0" },
+  statValue: { fontSize: 22, fontFamily: "Inter_900Black", marginBottom: 4 },
+  statLabel: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  statDivider: { width: 1 },
 
   sectionTitle: {
     fontSize: 12,
     fontFamily: "Inter_700Bold",
-    color: "#94a3b8",
     letterSpacing: 1.5,
     marginBottom: 12,
     marginLeft: 10,
   },
   menuCard: {
-    backgroundColor: "#ffffff",
     borderRadius: 24,
     padding: 8,
     marginBottom: 25,
@@ -351,18 +424,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginRight: 15,
   },
-  menuTitle: {
-    flex: 1,
-    fontSize: 16,
-    fontFamily: "Inter_600SemiBold",
-    color: "#1e293b",
-  },
-  menuDivider: { height: 1, backgroundColor: "#f1f5f9", marginHorizontal: 16 },
+  menuTitle: { flex: 1, fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  menuDivider: { height: 1, marginHorizontal: 16 },
   versionText: {
     textAlign: "center",
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: "#cbd5e1",
     marginTop: 10,
   },
 });

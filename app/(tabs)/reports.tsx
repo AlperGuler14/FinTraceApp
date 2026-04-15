@@ -4,19 +4,22 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Dimensions,
+  Modal,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
 import { supabase } from "../../constants/Supabase";
+import { useTheme } from "../../context/ThemeContext";
 
 const { width } = Dimensions.get("window");
 
 export default function ColorfulAnalyticsScreen() {
+  const { isDark, colors: theme } = useTheme();
   const [loading, setLoading] = useState(true);
-  const [timeFilter, setTimeFilter] = useState("monthly");
 
   const [metrics, setMetrics] = useState({
     income: 0,
@@ -25,11 +28,15 @@ export default function ColorfulAnalyticsScreen() {
     dailyBurn: 0,
     projectedExpense: 0,
   });
-  const [categories, setCategories] = useState([]);
-  const [insights, setInsights] = useState([]);
-  const [trendData, setTrendData] = useState([]);
+  const [categories, setCategories] = useState<any[]>([]);
+  const [insights, setInsights] = useState<any[]>([]);
+  const [trendData, setTrendData] = useState<any[]>([]);
 
-  // Daha Canlı ve Neon Renk Paleti
+  const [isDetailModalVisible, setDetailModalVisible] = useState(false);
+  const [activeKpi, setActiveKpi] = useState<
+    "income" | "expense" | "savings" | "burn" | null
+  >(null);
+
   const chartColors = [
     "#6366f1",
     "#f43f5e",
@@ -37,6 +44,20 @@ export default function ColorfulAnalyticsScreen() {
     "#f59e0b",
     "#8b5cf6",
     "#06b6d4",
+  ];
+  const monthNames = [
+    "Oca",
+    "Şub",
+    "Mar",
+    "Nis",
+    "May",
+    "Haz",
+    "Tem",
+    "Ağu",
+    "Eyl",
+    "Eki",
+    "Kas",
+    "Ara",
   ];
 
   const fetchAndAnalyzeData = async () => {
@@ -50,15 +71,39 @@ export default function ColorfulAnalyticsScreen() {
       if (!error && data) {
         let inc = 0,
           exp = 0;
-        let catMap = {};
+        let catMap: any = {};
+        const monthlyData: Record<
+          string,
+          { inc: number; exp: number; monthLabel: string; timestamp: number }
+        > = {};
 
         data.forEach((item) => {
-          if (item.tutar > 0) inc += item.tutar;
+          const val = Number(item.tutar) || 0;
+          if (val > 0) inc += val;
           else {
-            const absAmount = Math.abs(item.tutar);
+            const absAmount = Math.abs(val);
             exp += absAmount;
             catMap[item.kategori_adi] =
               (catMap[item.kategori_adi] || 0) + absAmount;
+          }
+
+          if (item.tarih) {
+            const date = new Date(item.tarih);
+            const key = `${date.getFullYear()}-${date.getMonth()}`;
+            if (!monthlyData[key]) {
+              monthlyData[key] = {
+                inc: 0,
+                exp: 0,
+                monthLabel: monthNames[date.getMonth()],
+                timestamp: new Date(
+                  date.getFullYear(),
+                  date.getMonth(),
+                  1,
+                ).getTime(),
+              };
+            }
+            if (val > 0) monthlyData[key].inc += val;
+            else monthlyData[key].exp += Math.abs(val);
           }
         });
 
@@ -92,25 +137,36 @@ export default function ColorfulAnalyticsScreen() {
           projectedExpense: projected,
         });
 
-        // ZENGİNLEŞTİRİLMİŞ AI İÇGÖRÜLERİ
-        let generatedInsights = [];
+        const trendArray = Object.values(monthlyData)
+          .sort((a, b) => a.timestamp - b.timestamp)
+          .slice(-5);
+        const maxVal =
+          Math.max(...trendArray.flatMap((d) => [d.inc, d.exp])) || 1;
+        setTrendData(
+          trendArray.map((d) => ({
+            month: d.monthLabel,
+            incH: (d.inc / maxVal) * 100,
+            expH: (d.exp / maxVal) * 100,
+          })),
+        );
 
+        // AI İÇGÖRÜLERİ - FULL VERSİYON
+        let generatedInsights = [];
         if (sortedCats.length > 0 && sortedCats[0].percent > 35) {
           generatedInsights.push({
             title: "Kategori Riski",
             icon: "pie-chart",
             color: "#f59e0b",
-            bg: "#fffbeb",
-            text: `Harcamalarının %${sortedCats[0].percent.toFixed(0)}'si sadece ${sortedCats[0].name} kategorisine gidiyor. Bu alanda %10'luk bir kesinti seni çok rahatlatır.`,
+            bg: isDark ? "rgba(245,158,11,0.15)" : "#fffbeb",
+            text: `Harcamalarının %${sortedCats[0].percent.toFixed(0)}'si sadece ${sortedCats[0].name} kategorisine gidiyor. %10'luk bir kesinti seni çok rahatlatır.`,
           });
         }
-
         if (projected > inc && inc > 0) {
           generatedInsights.push({
             title: "Bütçe Alarmı",
             icon: "trending-down",
             color: "#ef4444",
-            bg: "#fef2f2",
+            bg: isDark ? "rgba(239,68,68,0.15)" : "#fef2f2",
             text: `Bu hızla gidersen ay sonu faturan ₺${projected.toFixed(0)} olacak ve gelirini aşacak. Frene basma zamanı!`,
           });
         } else if (inc > 0) {
@@ -118,47 +174,29 @@ export default function ColorfulAnalyticsScreen() {
             title: "Mükemmel Gidişat",
             icon: "trending-up",
             color: "#10b981",
-            bg: "#ecfdf5",
+            bg: isDark ? "rgba(16,185,129,0.15)" : "#ecfdf5",
             text: `Harcama hızın harika. Ay sonunu net bir şekilde artıda kapatıp birikim yapabileceksin.`,
           });
         }
-
         if (savingsRate < 10 && inc > 0) {
           generatedInsights.push({
             title: "Tasarruf Fırsatı",
             icon: "shield",
             color: "#8b5cf6",
-            bg: "#f5f3ff",
-            text: `Şu an gelirinin sadece %${savingsRate.toFixed(1)}'ini elinde tutuyorsun. Dışarıda yemeği bir gün azaltıp bunu %15'e çıkaralım mı?`,
+            bg: isDark ? "rgba(139,92,246,0.15)" : "#f5f3ff",
+            text: `Şu an gelirinin sadece %${savingsRate.toFixed(1)}'ini tasarruf ediyorsun. Bunu %15'e çıkaralım mı?`,
           });
         }
-
-        if (generatedInsights.length === 0)
+        if (generatedInsights.length === 0) {
           generatedInsights.push({
             title: "Sistem Stabil",
             icon: "check-circle",
             color: "#10b981",
-            bg: "#ecfdf5",
+            bg: isDark ? "rgba(16,185,129,0.15)" : "#ecfdf5",
             text: "Tüm finansal göstergelerin sağlıklı seviyede.",
           });
+        }
         setInsights(generatedInsights);
-
-        const baseTrend = [
-          { month: "Oca", inc: inc * 0.8, exp: exp * 1.1 },
-          { month: "Şub", inc: inc * 0.9, exp: exp * 0.9 },
-          { month: "Mar", inc: inc * 0.85, exp: exp * 0.95 },
-          { month: "Nis", inc: inc, exp: exp },
-        ];
-
-        const maxVal =
-          Math.max(...baseTrend.flatMap((d) => [d.inc, d.exp])) || 1;
-        setTrendData(
-          baseTrend.map((d) => ({
-            ...d,
-            incH: (d.inc / maxVal) * 100,
-            expH: (d.exp / maxVal) * 100,
-          })),
-        );
       }
     } catch (e) {
       console.log("Hata:", e);
@@ -168,224 +206,447 @@ export default function ColorfulAnalyticsScreen() {
 
   useEffect(() => {
     fetchAndAnalyzeData();
-    const subscription = supabase
-      .channel("public:islemler_reports")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "islemler" },
-        fetchAndAnalyzeData,
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(subscription);
-    };
   }, []);
 
-  return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>Analitik Merkezi</Text>
-          <Text style={styles.subtitle}>Verilerin Renkli Dünyası 🎨</Text>
-        </View>
-        <TouchableOpacity style={styles.exportBtn}>
-          <Feather name="share" size={18} color="#fff" />
-        </TouchableOpacity>
-      </View>
+  const openDetail = (kpi: "income" | "expense" | "savings" | "burn") => {
+    setActiveKpi(kpi);
+    setDetailModalVisible(true);
+  };
 
-      {loading ? (
-        <ActivityIndicator
-          size="large"
-          color="#6366f1"
-          style={{ marginTop: 50 }}
-        />
-      ) : (
-        <>
-          {/* RENKLİ KPI GRID */}
-          <View style={styles.kpiGrid}>
-            <LinearGradient
-              colors={["#10b981", "#059669"]}
-              style={styles.kpiBoxGradient}
-            >
-              <View style={styles.kpiHeader}>
-                <Feather name="plus-circle" size={16} color="#fff" />
-                <Text style={styles.kpiLabelLight}>Toplam Gelir</Text>
-              </View>
-              <Text style={styles.kpiValueLight}>
-                ₺{metrics.income.toLocaleString()}
-              </Text>
-            </LinearGradient>
+  const renderKpiDetailContent = () => {
+    if (!activeKpi) return null;
+    let config = {
+      title: "",
+      icon: "",
+      colors: ["#fff", "#fff"],
+      value: "",
+      details: [] as any[],
+    };
+    const now = new Date();
+    const daysInMonth = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      0,
+    ).getDate();
+    const remainingDays = daysInMonth - now.getDate();
 
-            <LinearGradient
-              colors={["#f43f5e", "#e11d48"]}
-              style={styles.kpiBoxGradient}
-            >
-              <View style={styles.kpiHeader}>
-                <Feather name="minus-circle" size={16} color="#fff" />
-                <Text style={styles.kpiLabelLight}>Toplam Gider</Text>
-              </View>
-              <Text style={styles.kpiValueLight}>
-                ₺{metrics.expense.toLocaleString()}
-              </Text>
-            </LinearGradient>
+    switch (activeKpi) {
+      case "income":
+        config = {
+          title: "Gelir Analizi",
+          icon: "plus-circle",
+          colors: ["#10b981", "#059669"],
+          value: `₺${metrics.income.toLocaleString()}`,
+          details: [
+            {
+              title: "Nakit Akışı",
+              text:
+                metrics.income > 0
+                  ? "Gelir akışın aktif durumda."
+                  : "Henüz bir gelir kaydın yok.",
+              icon: "activity",
+            },
+            {
+              title: "Kapasite",
+              text: `Günlük ortalama ${Math.round(metrics.income / daysInMonth)} ₺ kazanım hızındasın.`,
+              icon: "battery-charging",
+            },
+          ],
+        };
+        break;
+      case "expense":
+        const topCat = categories[0];
+        config = {
+          title: "Gider Analizi",
+          icon: "minus-circle",
+          colors: ["#f43f5e", "#e11d48"],
+          value: `₺${metrics.expense.toLocaleString()}`,
+          details: [
+            {
+              title: "En Büyük Sızıntı",
+              text: topCat
+                ? `Bütçenin en büyük kısmı %${topCat.percent.toFixed(1)} ile ${topCat.name} kategorisine gidiyor.`
+                : "Harcama verisi yok.",
+              icon: "alert-triangle",
+            },
+            {
+              title: "Kısma Potansiyeli",
+              text: topCat
+                ? `Sadece bu kategoride %15 azaltsan, ayda ${Math.round(topCat.amount * 0.15)} ₺ tasarruf edersin.`
+                : "Veri bekleniyor.",
+              icon: "scissors",
+            },
+            {
+              title: "Ay Sonu Tahmini",
+              text: `Mevcut hızla ay sonunda toplam giderinin ₺${metrics.projectedExpense.toFixed(0)} olması bekleniyor.`,
+              icon: "fast-forward",
+            },
+          ],
+        };
+        break;
+      case "savings":
+        config = {
+          title: "Tasarruf & Birikim",
+          icon: "pie-chart",
+          colors: ["#6366f1", "#4f46e5"],
+          value: `%${metrics.savingsRate.toFixed(1)}`,
+          details: [
+            {
+              title: "Mevcut Durum",
+              text: `Şu anki tasarruf oranın %${metrics.savingsRate.toFixed(1)}. İdeal hedefin %20 olmalı.`,
+              icon: "target",
+            },
+            {
+              title: "Yıl Sonu Vizyonu",
+              text: `Bu tasarruf oranıyla yıl sonunda ₺${Math.round((metrics.income - metrics.expense) * 12).toLocaleString()} biriktirmiş olacaksın.`,
+              icon: "trending-up",
+            },
+          ],
+        };
+        break;
+      case "burn":
+        config = {
+          title: "Günlük Yanma Hızı",
+          icon: "activity",
+          colors: ["#f59e0b", "#d97706"],
+          value: `₺${metrics.dailyBurn.toFixed(0)} / gün`,
+          details: [
+            {
+              title: "Hız Sınırı",
+              text: `Ay sonuna ${remainingDays} gün var. Bakiyeni korumak için günlük limitin ₺${((metrics.income - metrics.expense) / remainingDays).toFixed(0)} olmalı.`,
+              icon: "zap",
+            },
+            {
+              title: "Kalan Günler",
+              text: `Ayın bitmesine çok az kaldı. Disiplini elden bırakma!`,
+              icon: "calendar",
+            },
+          ],
+        };
+        break;
+    }
 
-            <LinearGradient
-              colors={["#6366f1", "#4f46e5"]}
-              style={styles.kpiBoxGradient}
-            >
-              <View style={styles.kpiHeader}>
-                <Feather name="pie-chart" size={16} color="#fff" />
-                <Text style={styles.kpiLabelLight}>Tasarruf Oranı</Text>
-              </View>
-              <Text style={styles.kpiValueLight}>
-                %{metrics.savingsRate.toFixed(1)}
-              </Text>
-            </LinearGradient>
-
-            <LinearGradient
-              colors={["#f59e0b", "#d97706"]}
-              style={styles.kpiBoxGradient}
-            >
-              <View style={styles.kpiHeader}>
-                <Feather name="activity" size={16} color="#fff" />
-                <Text style={styles.kpiLabelLight}>Günlük Yanma</Text>
-              </View>
-              <Text style={styles.kpiValueLight}>
-                ₺{metrics.dailyBurn.toFixed(0)}
-              </Text>
-            </LinearGradient>
-          </View>
-
-          {/* RENKLİ VE DETAYLI İÇGÖRÜ KARTLARI */}
-          <Text style={styles.sectionHeader}>Aksiyon Planı & Teşhisler</Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingBottom: 25, paddingRight: 20 }}
+    return (
+      <View style={[styles.modalContainer, { backgroundColor: theme.bg }]}>
+        <LinearGradient
+          colors={config.colors as any}
+          style={styles.modalHeaderBg}
+        >
+          <TouchableOpacity
+            style={styles.closeBtn}
+            onPress={() => setDetailModalVisible(false)}
           >
-            {insights.map((insight, idx) => (
+            <Feather name="x" size={24} color="#fff" />
+          </TouchableOpacity>
+          <Feather
+            name={config.icon as any}
+            size={48}
+            color="rgba(255,255,255,0.8)"
+            style={{ marginBottom: 15 }}
+          />
+          <Text style={styles.modalKpiTitle}>{config.title}</Text>
+          <Text style={styles.modalKpiValue}>{config.value}</Text>
+        </LinearGradient>
+        <ScrollView style={styles.modalBody}>
+          <Text style={[styles.modalSectionTitle, { color: theme.textMain }]}>
+            AI Asistan Analizi
+          </Text>
+          {config.details.map((detail, idx) => (
+            <View
+              key={idx}
+              style={[
+                styles.detailCard,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  borderWidth: 1,
+                },
+              ]}
+            >
               <View
-                key={idx}
                 style={[
-                  styles.insightCard,
-                  {
-                    backgroundColor: insight.bg,
-                    borderColor: insight.color + "40",
-                  },
+                  styles.detailIconBox,
+                  { backgroundColor: config.colors[0] + "15" },
                 ]}
               >
-                <View style={styles.insightCardHeader}>
-                  <View
-                    style={[
-                      styles.insightIconBox,
-                      { backgroundColor: insight.color + "20" },
-                    ]}
-                  >
-                    <Feather
-                      name={insight.icon}
-                      size={18}
-                      color={insight.color}
-                    />
-                  </View>
-                  <Text style={[styles.insightTitle, { color: insight.color }]}>
-                    {insight.title}
-                  </Text>
-                </View>
-                <Text style={styles.insightText}>{insight.text}</Text>
+                <Feather
+                  name={detail.icon as any}
+                  size={20}
+                  color={config.colors[0]}
+                />
               </View>
-            ))}
-          </ScrollView>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.detailTitle, { color: theme.textMain }]}>
+                  {detail.title}
+                </Text>
+                <Text style={[styles.detailText, { color: theme.textSub }]}>
+                  {detail.text}
+                </Text>
+              </View>
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    );
+  };
 
-          {/* TREND GRAFİĞİ */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Aylık Trend Analizi</Text>
-            <View style={styles.trendChartArea}>
-              {trendData.map((data, idx) => (
-                <View key={idx} style={styles.trendColumn}>
-                  <View style={styles.barsWrapper}>
-                    <View style={styles.barTrack}>
-                      <LinearGradient
-                        colors={["#34d399", "#10b981"]}
-                        style={[styles.barFill, { height: `${data.incH}%` }]}
-                      />
+  return (
+    <View style={[styles.container, { backgroundColor: theme.bg }]}>
+      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
+      <ScrollView showsVerticalScrollIndicator={false}>
+        <View style={styles.header}>
+          <View>
+            <Text style={[styles.title, { color: theme.textMain }]}>
+              Analitik Merkezi
+            </Text>
+            <Text style={[styles.subtitle, { color: theme.textSub }]}>
+              Verilerin Renkli Dünyası 🎨
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.exportBtn, { backgroundColor: theme.primary }]}
+          >
+            <Feather name="share" size={18} color="#fff" />
+          </TouchableOpacity>
+        </View>
+
+        {loading ? (
+          <ActivityIndicator
+            size="large"
+            color={theme.primary}
+            style={{ marginTop: 50 }}
+          />
+        ) : (
+          <>
+            {/* KPI GRID */}
+            <View style={styles.kpiGrid}>
+              {[
+                {
+                  k: "income",
+                  l: "Toplam Gelir",
+                  v: `₺${metrics.income.toLocaleString()}`,
+                  c: ["#10b981", "#059669"],
+                  i: "plus-circle",
+                },
+                {
+                  k: "expense",
+                  l: "Toplam Gider",
+                  v: `₺${metrics.expense.toLocaleString()}`,
+                  c: ["#f43f5e", "#e11d48"],
+                  i: "minus-circle",
+                },
+                {
+                  k: "savings",
+                  l: "Tasarruf Oranı",
+                  v: `%${metrics.savingsRate.toFixed(1)}`,
+                  c: ["#6366f1", "#4f46e5"],
+                  i: "pie-chart",
+                },
+                {
+                  k: "burn",
+                  l: "Günlük Yanma",
+                  v: `₺${metrics.dailyBurn.toFixed(0)}`,
+                  c: ["#f59e0b", "#d97706"],
+                  i: "activity",
+                },
+              ].map((item: any, i) => (
+                <TouchableOpacity
+                  key={i}
+                  style={styles.kpiWrapper}
+                  activeOpacity={0.8}
+                  onPress={() => openDetail(item.k)}
+                >
+                  <LinearGradient colors={item.c} style={styles.kpiBoxGradient}>
+                    <View style={styles.kpiHeader}>
+                      <Feather name={item.i} size={16} color="#fff" />
+                      <Text style={styles.kpiLabelLight}>{item.l}</Text>
                     </View>
-                    <View style={styles.barTrack}>
-                      <LinearGradient
-                        colors={["#fb7185", "#f43f5e"]}
-                        style={[styles.barFill, { height: `${data.expH}%` }]}
-                      />
-                    </View>
-                  </View>
-                  <Text style={styles.trendLabel}>{data.month}</Text>
-                </View>
+                    <Text style={styles.kpiValueLight}>{item.v}</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
               ))}
             </View>
-            <View style={styles.legendRow}>
-              <View style={styles.legendItem}>
-                <View
-                  style={[styles.legendDot, { backgroundColor: "#10b981" }]}
-                />
-                <Text style={styles.legendText}>Gelir</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View
-                  style={[styles.legendDot, { backgroundColor: "#f43f5e" }]}
-                />
-                <Text style={styles.legendText}>Gider</Text>
-              </View>
-            </View>
-          </View>
 
-          {/* KATEGORİ DAĞILIMI */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Dağılım Haritası</Text>
-
-            <View style={styles.stackedBarContainer}>
-              {categories.map((cat, idx) => (
+            {/* AKSİYON PLANLARI */}
+            <Text style={[styles.sectionHeader, { color: theme.textMain }]}>
+              Aksiyon Planı & Teşhisler
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 25, paddingRight: 20 }}
+            >
+              {insights.map((insight, idx) => (
                 <View
                   key={idx}
-                  style={{ flex: cat.percent, backgroundColor: cat.color }}
-                />
-              ))}
-            </View>
-
-            {categories.length > 0 ? (
-              <View style={styles.categoryList}>
-                {categories.map((cat, idx) => (
-                  <View key={idx} style={styles.categoryItem}>
+                  style={[
+                    styles.insightCard,
+                    {
+                      backgroundColor: isDark ? theme.cardBg : insight.bg,
+                      borderColor: insight.color + "40",
+                      borderWidth: 1,
+                    },
+                  ]}
+                >
+                  <View style={styles.insightCardHeader}>
                     <View
                       style={[
-                        styles.catIconArea,
-                        { backgroundColor: cat.color + "15" },
+                        styles.insightIconBox,
+                        { backgroundColor: insight.color + "20" },
                       ]}
                     >
-                      <Feather name="hash" size={16} color={cat.color} />
+                      <Feather
+                        name={insight.icon}
+                        size={18}
+                        color={insight.color}
+                      />
                     </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.catName}>{cat.name}</Text>
-                      <Text style={styles.catPercent}>
-                        Bütçenin %{cat.percent.toFixed(1)}'i
-                      </Text>
+                    <Text
+                      style={[styles.insightTitle, { color: insight.color }]}
+                    >
+                      {insight.title}
+                    </Text>
+                  </View>
+                  <Text
+                    style={[
+                      styles.insightText,
+                      { color: isDark ? theme.textMain : "#334155" },
+                    ]}
+                  >
+                    {insight.text}
+                  </Text>
+                </View>
+              ))}
+            </ScrollView>
+
+            {/* TREND GRAFİĞİ */}
+            <View
+              style={[
+                styles.card,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  borderWidth: isDark ? 1 : 0,
+                },
+              ]}
+            >
+              <Text style={[styles.cardTitle, { color: theme.textMain }]}>
+                Aylık Trend Analizi
+              </Text>
+              <View
+                style={[
+                  styles.trendChartArea,
+                  { borderBottomColor: theme.border },
+                ]}
+              >
+                {trendData.map((data, idx) => (
+                  <View key={idx} style={styles.trendColumn}>
+                    <View style={styles.barsWrapper}>
+                      <View style={styles.barTrack}>
+                        <LinearGradient
+                          colors={["#34d399", "#10b981"]}
+                          style={[styles.barFill, { height: `${data.incH}%` }]}
+                        />
+                      </View>
+                      <View style={styles.barTrack}>
+                        <LinearGradient
+                          colors={["#fb7185", "#f43f5e"]}
+                          style={[styles.barFill, { height: `${data.expH}%` }]}
+                        />
+                      </View>
                     </View>
-                    <Text style={styles.catAmount}>
-                      ₺{cat.amount.toLocaleString()}
+                    <Text style={[styles.trendLabel, { color: theme.textSub }]}>
+                      {data.month}
                     </Text>
                   </View>
                 ))}
               </View>
-            ) : (
-              <Text style={styles.emptyText}>Veri bulunamadı.</Text>
-            )}
-          </View>
-        </>
-      )}
-      <View style={{ height: 100 }} />
-    </ScrollView>
+            </View>
+
+            {/* KATEGORİ DAĞILIMI (STACKED BAR VE LİSTE) */}
+            <View
+              style={[
+                styles.card,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  borderWidth: isDark ? 1 : 0,
+                },
+              ]}
+            >
+              <Text style={[styles.cardTitle, { color: theme.textMain }]}>
+                Dağılım Haritası
+              </Text>
+              <View style={styles.stackedBarContainer}>
+                {categories.map((cat, idx) => (
+                  <View
+                    key={idx}
+                    style={{ flex: cat.percent, backgroundColor: cat.color }}
+                  />
+                ))}
+              </View>
+              {categories.length > 0 ? (
+                <View style={styles.categoryList}>
+                  {categories.map((cat, idx) => (
+                    <View
+                      key={idx}
+                      style={[
+                        styles.categoryItem,
+                        { borderBottomColor: theme.border },
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.catIconArea,
+                          { backgroundColor: cat.color + "20" },
+                        ]}
+                      >
+                        <Feather name="hash" size={16} color={cat.color} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[styles.catName, { color: theme.textMain }]}
+                        >
+                          {cat.name}
+                        </Text>
+                        <Text
+                          style={[styles.catPercent, { color: theme.textSub }]}
+                        >
+                          Bütçenin %{cat.percent.toFixed(1)}'i
+                        </Text>
+                      </View>
+                      <Text
+                        style={[styles.catAmount, { color: theme.textMain }]}
+                      >
+                        ₺{cat.amount.toLocaleString()}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <Text style={[styles.emptyText, { color: theme.textSub }]}>
+                  Veri bulunamadı.
+                </Text>
+              )}
+            </View>
+          </>
+        )}
+        <View style={{ height: 100 }} />
+      </ScrollView>
+
+      <Modal
+        visible={isDetailModalVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        {renderKpiDetailContent()}
+      </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f8fafc", paddingHorizontal: 20 },
+  container: { flex: 1, paddingHorizontal: 20 },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -393,74 +654,38 @@ const styles = StyleSheet.create({
     marginBottom: 25,
     marginTop: 60,
   },
-  title: {
-    fontSize: 26,
-    fontFamily: "Inter_900Black",
-    color: "#1e293b",
-    letterSpacing: -0.5,
-  },
-  subtitle: {
-    fontSize: 14,
-    fontFamily: "Inter_500Medium",
-    color: "#64748b",
-    marginTop: 4,
-  },
+  title: { fontSize: 26, fontWeight: "900", letterSpacing: -0.5 },
+  subtitle: { fontSize: 14, fontWeight: "500", marginTop: 4 },
   exportBtn: {
-    backgroundColor: "#6366f1",
     width: 44,
     height: 44,
     borderRadius: 14,
     justifyContent: "center",
     alignItems: "center",
     elevation: 4,
-    shadowColor: "#6366f1",
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
   },
-
-  // Renkli KPI Grid
   kpiGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
     marginBottom: 30,
   },
-  kpiBoxGradient: {
-    width: "48%",
-    padding: 18,
-    borderRadius: 24,
-    marginBottom: 15,
-    elevation: 4,
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-  },
+  kpiWrapper: { width: "48%", marginBottom: 15 },
+  kpiBoxGradient: { padding: 18, borderRadius: 24, elevation: 4 },
   kpiHeader: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
   kpiLabelLight: {
     fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
+    fontWeight: "600",
     color: "rgba(255,255,255,0.9)",
     marginLeft: 6,
   },
-  kpiValueLight: {
-    fontSize: 22,
-    fontFamily: "Inter_900Black",
-    color: "#ffffff",
-  },
-
-  // Aksiyon Planı Kartları (Yatay Kaydırmalı)
-  sectionHeader: {
-    fontSize: 18,
-    fontFamily: "Inter_800Black",
-    color: "#1e293b",
-    marginBottom: 15,
-  },
+  kpiValueLight: { fontSize: 22, fontWeight: "900", color: "#ffffff" },
+  sectionHeader: { fontSize: 18, fontWeight: "900", marginBottom: 15 },
   insightCard: {
     width: width * 0.75,
     padding: 20,
     borderRadius: 24,
     marginRight: 15,
-    borderWidth: 1,
   },
   insightCardHeader: {
     flexDirection: "row",
@@ -475,40 +700,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginRight: 10,
   },
-  insightTitle: { fontSize: 15, fontFamily: "Inter_800Black" },
-  insightText: {
-    fontSize: 13,
-    fontFamily: "Inter_500Medium",
-    color: "#334155",
-    lineHeight: 20,
-  },
-
-  // Kartlar Ortak
-  card: {
-    backgroundColor: "#fff",
-    borderRadius: 28,
-    padding: 25,
-    marginBottom: 25,
-    elevation: 3,
-    shadowColor: "#000",
-    shadowOpacity: 0.04,
-    shadowRadius: 15,
-  },
-  cardTitle: {
-    fontSize: 16,
-    fontFamily: "Inter_800Black",
-    color: "#1e293b",
-    marginBottom: 25,
-  },
-
-  // Trend Grafiği
+  insightTitle: { fontSize: 15, fontWeight: "900" },
+  insightText: { fontSize: 13, fontWeight: "500", lineHeight: 20 },
+  card: { borderRadius: 28, padding: 25, marginBottom: 25, elevation: 2 },
+  cardTitle: { fontSize: 16, fontWeight: "900", marginBottom: 25 },
   trendChartArea: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
     height: 180,
     borderBottomWidth: 1,
-    borderBottomColor: "#f1f5f9",
     paddingBottom: 10,
   },
   trendColumn: { alignItems: "center", width: 50 },
@@ -520,23 +721,7 @@ const styles = StyleSheet.create({
   },
   barTrack: { width: 14, height: "100%", justifyContent: "flex-end" },
   barFill: { width: "100%", borderRadius: 6 },
-  trendLabel: {
-    fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-    color: "#94a3b8",
-    marginTop: 10,
-  },
-  legendRow: {
-    flexDirection: "row",
-    justifyContent: "center",
-    marginTop: 20,
-    gap: 20,
-  },
-  legendItem: { flexDirection: "row", alignItems: "center" },
-  legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 6 },
-  legendText: { fontSize: 13, fontFamily: "Inter_500Medium", color: "#64748b" },
-
-  // Kategori Dağılımı
+  trendLabel: { fontSize: 12, fontWeight: "600", marginTop: 10 },
   stackedBarContainer: {
     flexDirection: "row",
     height: 14,
@@ -550,7 +735,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 15,
     borderBottomWidth: 1,
-    borderBottomColor: "#f8fafc",
   },
   catIconArea: {
     width: 44,
@@ -560,18 +744,50 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginRight: 15,
   },
-  catName: {
-    fontSize: 15,
-    fontFamily: "Inter_700Bold",
-    color: "#1e293b",
-    marginBottom: 2,
+  catName: { fontSize: 15, fontWeight: "bold", marginBottom: 2 },
+  catPercent: { fontSize: 12, fontWeight: "500" },
+  catAmount: { fontSize: 16, fontWeight: "900" },
+  emptyText: { textAlign: "center", fontWeight: "500", marginTop: 10 },
+  modalContainer: { flex: 1 },
+  modalHeaderBg: {
+    paddingTop: 60,
+    paddingBottom: 40,
+    paddingHorizontal: 30,
+    alignItems: "center",
+    borderBottomLeftRadius: 40,
+    borderBottomRightRadius: 40,
   },
-  catPercent: { fontSize: 12, fontFamily: "Inter_500Medium", color: "#94a3b8" },
-  catAmount: { fontSize: 16, fontFamily: "Inter_800Black", color: "#1e293b" },
-  emptyText: {
-    textAlign: "center",
-    color: "#94a3b8",
-    fontFamily: "Inter_500Medium",
-    marginTop: 10,
+  closeBtn: {
+    position: "absolute",
+    top: 20,
+    right: 20,
+    padding: 10,
+    zIndex: 10,
   },
+  modalKpiTitle: {
+    fontSize: 18,
+    color: "rgba(255,255,255,0.9)",
+    fontWeight: "600",
+    marginBottom: 5,
+  },
+  modalKpiValue: { fontSize: 42, color: "#fff", fontWeight: "900" },
+  modalBody: { padding: 25, paddingTop: 30 },
+  modalSectionTitle: { fontSize: 18, fontWeight: "900", marginBottom: 20 },
+  detailCard: {
+    flexDirection: "row",
+    padding: 20,
+    borderRadius: 20,
+    marginBottom: 15,
+    elevation: 2,
+  },
+  detailIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 15,
+  },
+  detailTitle: { fontSize: 15, fontWeight: "bold", marginBottom: 4 },
+  detailText: { fontSize: 13, lineHeight: 20, fontWeight: "500" },
 });
