@@ -1,12 +1,14 @@
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect } from "expo-router";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Dimensions,
   Modal,
+  Platform,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -16,7 +18,7 @@ import {
   View,
 } from "react-native";
 import { supabase } from "../../constants/Supabase";
-import { useTheme } from "../../context/ThemeContext"; // TEMA MOTORU EKLENDİ
+import { useTheme } from "../../context/ThemeContext";
 
 const { width } = Dimensions.get("window");
 
@@ -96,7 +98,7 @@ const calculateFinancialScore = (
 };
 
 export default function IntegratedAssistantDashboard() {
-  const { isDark, colors: theme } = useTheme(); // TEMAYI ÇEKİYORUZ
+  const { isDark, colors: theme } = useTheme();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [totalBalance, setTotalBalance] = useState(0);
@@ -113,6 +115,18 @@ export default function IntegratedAssistantDashboard() {
   const [isAiVisible, setIsAiVisible] = useState(false);
   const [isAddModalVisible, setIsAddModalVisible] = useState(false);
   const [isGuideVisible, setIsGuideVisible] = useState(false);
+  const [isReceiptVisible, setIsReceiptVisible] = useState(false);
+
+  // AY SONU KONTROLÜ
+  const today = new Date();
+  const lastDayOfMonth = new Date(
+    today.getFullYear(),
+    today.getMonth() + 1,
+    0,
+  ).getDate();
+  // Test etmek istersen aşağıdaki satırı geçici olarak "const isMonthEnd = true;" yapabilirsin
+  //const isMonthEnd = today.getDate() === lastDayOfMonth;
+  const isMonthEnd = true;
 
   const fetchFinancialData = async () => {
     setLoading(true);
@@ -230,6 +244,39 @@ export default function IntegratedAssistantDashboard() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
+        {/* AY SONU KAPANIS BANNER'I (Sadece ayın son günü görünür) */}
+        {isMonthEnd && (
+          <TouchableOpacity
+            onPress={() => setIsReceiptVisible(true)}
+            style={{
+              flexDirection: "row",
+              backgroundColor: isDark ? "rgba(245,158,11,0.2)" : "#fef3c7",
+              padding: 12,
+              borderRadius: 14,
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 15,
+              borderWidth: 1,
+              borderColor: "rgba(245,158,11,0.5)",
+            }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
+              <Feather
+                name="calendar"
+                size={18}
+                color="#d97706"
+                style={{ marginRight: 10 }}
+              />
+              <Text
+                style={{ color: "#b45309", fontWeight: "bold", fontSize: 13 }}
+              >
+                Bugün ayın son günü. Geçmişle yüzleş!
+              </Text>
+            </View>
+            <Feather name="chevron-right" size={18} color="#d97706" />
+          </TouchableOpacity>
+        )}
+
         {/* BAKİYE KARTI */}
         <View
           style={[
@@ -441,11 +488,30 @@ export default function IntegratedAssistantDashboard() {
         theme={theme}
         isDark={isDark}
       />
+
+      {/* YAZAR KASA FİŞİ MODALI */}
+      <ReceiptModalRN
+        visible={isReceiptVisible}
+        onClose={() => setIsReceiptVisible(false)}
+        theme={theme}
+        isDark={isDark}
+        data={{
+          ay: new Date()
+            .toLocaleString("tr-TR", { month: "long" })
+            .toUpperCase(),
+          oncekiBakiye: totalBalance + monthlyExpense - monthlyIncome,
+          gelir: monthlyIncome,
+          gider: monthlyExpense,
+          enCokHarcanan: "Dışarıda Yemek",
+          enflasyonKaybi: totalBalance > 0 ? totalBalance * 0.03 : 0,
+          netSonuc: totalBalance,
+        }}
+      />
     </View>
   );
 }
 
-// --- MODAL BİLEŞENLERİ (TEMA UYUMLU) ---
+// --- MODAL BİLEŞENLERİ ---
 
 const GuideModal = ({ visible, onClose, theme, isDark }: any) => {
   const steps = [
@@ -788,6 +854,267 @@ const AddTransactionModal = ({
             </Text>
           </TouchableOpacity>
         </ScrollView>
+      </View>
+    </Modal>
+  );
+};
+
+// --- YAZAR KASA FİŞİ MODALI (REACT NATIVE ANIMATED) ---
+const ReceiptModalRN = ({ visible, onClose, theme, isDark, data }: any) => {
+  const translateY = useRef(
+    new Animated.Value(-Dimensions.get("window").height),
+  ).current;
+  const opacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (visible) {
+      Animated.parallel([
+        Animated.spring(translateY, {
+          toValue: 0,
+          friction: 6,
+          tension: 40,
+          useNativeDriver: true,
+        }),
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      translateY.setValue(-Dimensions.get("window").height);
+      opacity.setValue(0);
+    }
+  }, [visible]);
+
+  if (!visible) return null;
+
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.7)",
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+      >
+        <Animated.View
+          style={{
+            transform: [{ translateY }],
+            opacity,
+            backgroundColor: "#fdfbf7",
+            width: width * 0.85,
+            padding: 25,
+            borderRadius: 8,
+            borderBottomWidth: 2,
+            borderBottomColor: "#ccc",
+            borderStyle: "dashed",
+          }}
+        >
+          <View
+            style={{
+              alignItems: "center",
+              borderBottomWidth: 1,
+              borderBottomColor: "#ccc",
+              borderStyle: "dashed",
+              paddingBottom: 15,
+              marginBottom: 15,
+            }}
+          >
+            <Text
+              style={{
+                fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                fontSize: 22,
+                fontWeight: "bold",
+                color: "#111",
+              }}
+            >
+              FINTRACE
+            </Text>
+            <Text
+              style={{
+                fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                fontSize: 12,
+                color: "#555",
+                marginTop: 5,
+              }}
+            >
+              ALPER - {data.ay} ÖZETİ
+            </Text>
+          </View>
+
+          <View style={{ gap: 10 }}>
+            <View
+              style={{ flexDirection: "row", justifyContent: "space-between" }}
+            >
+              <Text
+                style={{
+                  fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                  color: "#333",
+                }}
+              >
+                Önceki Bakiye
+              </Text>
+              <Text
+                style={{
+                  fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                  color: "#333",
+                }}
+              >
+                ₺{data.oncekiBakiye.toFixed(2)}
+              </Text>
+            </View>
+            <View
+              style={{ flexDirection: "row", justifyContent: "space-between" }}
+            >
+              <Text
+                style={{
+                  fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                  color: "#10b981",
+                }}
+              >
+                (+) Gelirler
+              </Text>
+              <Text
+                style={{
+                  fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                  color: "#10b981",
+                }}
+              >
+                ₺{data.gelir.toFixed(2)}
+              </Text>
+            </View>
+            <View
+              style={{ flexDirection: "row", justifyContent: "space-between" }}
+            >
+              <Text
+                style={{
+                  fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                  color: "#ef4444",
+                }}
+              >
+                (-) Giderler
+              </Text>
+              <Text
+                style={{
+                  fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                  color: "#ef4444",
+                }}
+              >
+                ₺{data.gider.toFixed(2)}
+              </Text>
+            </View>
+            <View
+              style={{
+                marginTop: 10,
+                paddingTop: 10,
+                borderTopWidth: 1,
+                borderTopColor: "#ccc",
+                borderStyle: "dotted",
+              }}
+            >
+              <Text
+                style={{
+                  fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                  color: "#666",
+                  fontSize: 12,
+                }}
+              >
+                En Çok Harcanan
+              </Text>
+              <Text
+                style={{
+                  fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                  color: "#111",
+                  fontWeight: "bold",
+                }}
+              >
+                {data.enCokHarcanan}
+              </Text>
+            </View>
+          </View>
+
+          <View
+            style={{
+              backgroundColor: "rgba(239,68,68,0.1)",
+              padding: 10,
+              borderRadius: 5,
+              marginTop: 20,
+              flexDirection: "row",
+              justifyContent: "space-between",
+            }}
+          >
+            <Text
+              style={{
+                fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                color: "#ef4444",
+                fontWeight: "bold",
+              }}
+            >
+              Enflasyon Kaybı
+            </Text>
+            <Text
+              style={{
+                fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                color: "#ef4444",
+                fontWeight: "bold",
+              }}
+            >
+              -₺{data.enflasyonKaybi.toFixed(2)}
+            </Text>
+          </View>
+
+          <View
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "flex-end",
+              marginTop: 20,
+            }}
+          >
+            <Text
+              style={{
+                fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                fontSize: 16,
+                fontWeight: "bold",
+                color: "#111",
+              }}
+            >
+              NET DURUM
+            </Text>
+            <Text
+              style={{
+                fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+                fontSize: 18,
+                fontWeight: "bold",
+                color: data.netSonuc >= 0 ? "#10b981" : "#ef4444",
+              }}
+            >
+              ₺{data.netSonuc.toFixed(2)}
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            onPress={() => {
+              onClose();
+              router.push("/time-machine");
+            }}
+            style={{
+              backgroundColor: "#111",
+              padding: 15,
+              borderRadius: 8,
+              marginTop: 30,
+              alignItems: "center",
+            }}
+          >
+            <Text
+              style={{ color: "#fff", fontWeight: "bold", letterSpacing: 1 }}
+            >
+              ZAMAN MAKİNESİNE GEÇ
+            </Text>
+          </TouchableOpacity>
+        </Animated.View>
       </View>
     </Modal>
   );
