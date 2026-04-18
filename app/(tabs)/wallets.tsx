@@ -1,17 +1,17 @@
 import { Ionicons } from "@expo/vector-icons";
 import React, { useEffect, useState } from "react";
 import {
-    Alert,
-    Dimensions,
-    FlatList,
-    Modal,
-    SafeAreaView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  Dimensions,
+  FlatList,
+  Modal,
+  SafeAreaView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { supabase } from "../../constants/Supabase";
 import { useTheme } from "../../context/ThemeContext"; // TEMA MOTORU EKLENDİ
@@ -53,24 +53,39 @@ const WalletsScreen = () => {
       return;
     }
     try {
+      // 1. ADIM: Mevcut giriş yapmış kullanıcının bilgisini al
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        Alert.alert("Hata", "Oturum bulunamadı. Lütfen tekrar giriş yapın.");
+        return;
+      }
+
+      // 2. ADIM: Kaydı user_id ile birlikte gönder
       const { error } = await supabase.from("wallets").insert([
         {
-          name: newName,
+          name: newName, // Eğer veritabanında sütun adı 'ad' ise burayı 'ad: newName' yap
           limit: parseFloat(newLimit),
           spent: 0,
           type: "Aylık Harcama Zarfı",
+          user_id: user.id, // KRİTİK: Güvenlik kalkanını bu anahtar açar!
         },
       ]);
+
       if (error) throw error;
+
       setNewName("");
       setNewLimit("");
       setWalletModalVisible(false);
       fetchWallets();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); // Varsa ekle, şık olur
     } catch (error: any) {
+      console.error("Zarf ekleme hatası:", error.message);
       Alert.alert("Hata", error.message);
     }
   };
-
   const handleAddExpense = async () => {
     if (!expenseAmount || !activeWallet) return;
     try {

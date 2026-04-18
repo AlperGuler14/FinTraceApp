@@ -1,4 +1,5 @@
 import { Feather } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -17,6 +18,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { z } from "zod"; // ZOD IMPORT EKLENDİ
 import { supabase } from "../../constants/Supabase";
 import { useTheme } from "../../context/ThemeContext";
 
@@ -31,6 +33,21 @@ interface Transaction {
   category: string;
   date: string;
 }
+
+// --- ZOD ŞEMASI (MANTIKSAL DOĞRULAMA KORUMASI) ---
+const transactionSchema = z.object({
+  amount: z
+    .number()
+    .positive("Tutar 0'dan büyük olmalıdır.")
+    .max(
+      1000000,
+      "Güvenlik: Tek seferde 1 Milyon ₺'den fazla işlem eklenemez.",
+    ),
+  desc: z
+    .string()
+    .min(3, "Açıklama çok kısa, neye harcadığını belirtmelisin.")
+    .max(50, "Açıklama çok uzun, lütfen daha kısa özetle."),
+});
 
 // --- FİNANSAL SAĞLIK ALGORİTMASI ---
 const calculateFinancialScore = (
@@ -117,6 +134,15 @@ export default function IntegratedAssistantDashboard() {
   const [isGuideVisible, setIsGuideVisible] = useState(false);
   const [isReceiptVisible, setIsReceiptVisible] = useState(false);
 
+  // --- GERİ AL (UNDO) STATE VE REFERANSLARI ---
+  const [undoData, setUndoData] = useState<{
+    id: string;
+    amount: number;
+    walletId: string | null;
+  } | null>(null);
+  const [showUndoToast, setShowUndoToast] = useState(false);
+  const undoTimeout = useRef<NodeJS.Timeout | null>(null);
+
   // AY SONU KONTROLÜ
   const today = new Date();
   const lastDayOfMonth = new Date(
@@ -124,9 +150,7 @@ export default function IntegratedAssistantDashboard() {
     today.getMonth() + 1,
     0,
   ).getDate();
-  // Test etmek istersen aşağıdaki satırı geçici olarak "const isMonthEnd = true;" yapabilirsin
-  //const isMonthEnd = today.getDate() === lastDayOfMonth;
-  const isMonthEnd = true;
+  const isMonthEnd = true; // Gerçekte: today.getDate() === lastDayOfMonth;
 
   const fetchFinancialData = async () => {
     setLoading(true);
@@ -207,6 +231,57 @@ export default function IntegratedAssistantDashboard() {
     }, []),
   );
 
+  // --- GERİ AL (UNDO) FONKSİYONU ---
+  const handleUndo = async () => {
+    if (!undoData) return;
+
+    try {
+      // İşlemi sil
+      await supabase.from("islemler").delete().eq("id", undoData.id);
+
+      // Zarf harcamasından geri düş
+      if (undoData.walletId) {
+        const { data: wallet } = await supabase
+          .from("wallets")
+          .select("spent")
+          .eq("id", undoData.walletId)
+          .single();
+        if (wallet) {
+          await supabase
+            .from("wallets")
+            .update({ spent: Number(wallet.spent) - undoData.amount })
+            .eq("id", undoData.walletId);
+        }
+      }
+
+      setShowUndoToast(false);
+      setUndoData(null);
+      if (undoTimeout.current) clearTimeout(undoTimeout.current);
+      fetchFinancialData();
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error) {
+      console.error("Geri alma başarısız:", error);
+    }
+  };
+
+  // İŞLEM BAŞARILI EKLENDİĞİNDE ÇALIŞACAK FONKSİYON
+  const handleTransactionSuccess = (
+    id: string,
+    amount: number,
+    walletId: string | null,
+  ) => {
+    setUndoData({ id, amount, walletId });
+    setShowUndoToast(true);
+    if (undoTimeout.current) clearTimeout(undoTimeout.current);
+
+    // 5 Saniye sonra bildirimi kaldır
+    undoTimeout.current = setTimeout(() => {
+      setShowUndoToast(false);
+      setUndoData(null);
+    }, 5000);
+  };
+
   return (
     <View style={[styles.mainContainer, { backgroundColor: theme.bg }]}>
       <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
@@ -244,7 +319,7 @@ export default function IntegratedAssistantDashboard() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* AY SONU KAPANIS BANNER'I (Sadece ayın son günü görünür) */}
+        {/* AY SONU BANNER */}
         {isMonthEnd && (
           <TouchableOpacity
             onPress={() => setIsReceiptVisible(true)}
@@ -468,6 +543,21 @@ export default function IntegratedAssistantDashboard() {
         <View style={{ height: 100 }} />
       </ScrollView>
 
+      {/* 5 SANİYELİK GERİ AL BİLDİRİMİ */}
+      {showUndoToast && (
+        <Animated.View
+          style={[
+            styles.toastContainer,
+            { backgroundColor: isDark ? "#334155" : "#1e293b" },
+          ]}
+        >
+          <Text style={styles.toastText}>İşlem başarıyla eklendi.</Text>
+          <TouchableOpacity onPress={handleUndo} style={styles.undoBtn}>
+            <Text style={styles.undoBtnText}>Geri Al</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
+
       {/* MODALLAR */}
       <GuideModal
         visible={isGuideVisible}
@@ -481,12 +571,15 @@ export default function IntegratedAssistantDashboard() {
         theme={theme}
         isDark={isDark}
       />
+
+      {/* ZOD KORUMALI ADD TRANSACTION MODAL */}
       <AddTransactionModal
         visible={isAddModalVisible}
         onClose={() => setIsAddModalVisible(false)}
         onRefresh={fetchFinancialData}
         theme={theme}
         isDark={isDark}
+        onSuccess={handleTransactionSuccess}
       />
 
       {/* YAZAR KASA FİŞİ MODALI */}
@@ -502,7 +595,10 @@ export default function IntegratedAssistantDashboard() {
           oncekiBakiye: totalBalance + monthlyExpense - monthlyIncome,
           gelir: monthlyIncome,
           gider: monthlyExpense,
-          enCokHarcanan: "Dışarıda Yemek",
+          enCokHarcanan:
+            transactions.length > 0
+              ? transactions[0].category.toUpperCase()
+              : "VERİ YOK",
           enflasyonKaybi: totalBalance > 0 ? totalBalance * 0.03 : 0,
           netSonuc: totalBalance,
         }}
@@ -662,12 +758,14 @@ const AiAssistantModal = ({ visible, onClose, theme, isDark }: any) => (
   </Modal>
 );
 
+// --- ZOD KORUMALI İŞLEM EKLEME MODALI ---
 const AddTransactionModal = ({
   visible,
   onClose,
   onRefresh,
   theme,
   isDark,
+  onSuccess,
 }: any) => {
   const [type, setType] = useState<"income" | "expense">("expense");
   const [amount, setAmount] = useState("");
@@ -686,39 +784,60 @@ const AddTransactionModal = ({
     if (data) setWallets(data);
   };
 
+  const handleAmountChange = (text: string) => {
+    const numericValue = text.replace(/[^0-9]/g, "");
+    if (!numericValue) {
+      setAmount("");
+      return;
+    }
+    setAmount(Number(numericValue).toLocaleString("tr-TR"));
+  };
+
   const handleSave = async () => {
-    if (!amount || !desc)
-      return Alert.alert("Eksik Bilgi", "Lütfen tutar ve açıklama girin.");
-    if (type === "expense" && !selectedWallet)
-      return Alert.alert(
-        "Zarf Seçilmedi",
-        "Lütfen bu harcamanın düşeceği zarfı seçin.",
-      );
     try {
-      const numAmount = Math.abs(Number(amount));
+      const rawAmount = Number(amount.replace(/\./g, ""));
+      transactionSchema.parse({ amount: rawAmount, desc: desc.trim() });
+
+      if (type === "expense" && !selectedWallet)
+        throw new Error("Lütfen bu harcamanın düşeceği zarfı seçin.");
+
       const isExpense = type === "expense";
-      const { error: txError } = await supabase.from("islemler").insert([
-        {
-          tutar: isExpense ? -numAmount : numAmount,
-          aciklama: desc,
-          kategori_adi: isExpense ? selectedWallet.name : "Gelir",
-          tarih: new Date().toISOString(),
-        },
-      ]);
+      // ID'yi almak için .select() ekledik
+      const { data: newTx, error: txError } = await supabase
+        .from("islemler")
+        .insert([
+          {
+            tutar: isExpense ? -rawAmount : rawAmount,
+            aciklama: desc.trim(),
+            kategori_adi: isExpense ? selectedWallet.name : "Gelir",
+            tarih: new Date().toISOString(),
+          },
+        ])
+        .select();
+
       if (txError) throw txError;
+
       if (isExpense && selectedWallet) {
         await supabase
           .from("wallets")
-          .update({ spent: Number(selectedWallet.spent || 0) + numAmount })
+          .update({ spent: Number(selectedWallet.spent || 0) + rawAmount })
           .eq("id", selectedWallet.id);
       }
+
       setAmount("");
       setDesc("");
       setSelectedWallet(null);
       onRefresh();
       onClose();
+
+      // Başarılı olduğunda Geri Al bildirimi için veriyi gönder
+      if (onSuccess && newTx) {
+        onSuccess(newTx[0].id, rawAmount, isExpense ? selectedWallet.id : null);
+      }
     } catch (error: any) {
-      Alert.alert("Hata", error.message);
+      if (error instanceof z.ZodError)
+        Alert.alert("Geçersiz Veri", error.errors[0].message);
+      else Alert.alert("Hata", error.message);
     }
   };
 
@@ -737,7 +856,7 @@ const AddTransactionModal = ({
             <Feather name="x" size={24} color={theme.textSub} />
           </TouchableOpacity>
         </View>
-        <ScrollView style={{ padding: 20 }}>
+        <ScrollView style={{ padding: 20 }} keyboardShouldPersistTaps="handled">
           <View
             style={[styles.typeSelector, { backgroundColor: theme.iconBg }]}
           >
@@ -782,15 +901,17 @@ const AddTransactionModal = ({
                 backgroundColor: theme.cardBg,
                 borderColor: theme.border,
                 color: theme.textMain,
+                fontSize: 24,
+                fontWeight: "bold",
               },
             ]}
             placeholderTextColor={theme.textSub}
-            keyboardType="numeric"
+            keyboardType="number-pad"
             value={amount}
-            onChangeText={setAmount}
+            onChangeText={handleAmountChange}
           />
           <TextInput
-            placeholder="Nereye harcadın? (Açıklama)"
+            placeholder="Nereye harcadın? (En az 3 harf)"
             style={[
               styles.input,
               {
@@ -802,6 +923,7 @@ const AddTransactionModal = ({
             placeholderTextColor={theme.textSub}
             value={desc}
             onChangeText={setDesc}
+            maxLength={50}
           />
           {type === "expense" && (
             <View style={styles.walletSection}>
@@ -859,7 +981,7 @@ const AddTransactionModal = ({
   );
 };
 
-// --- YAZAR KASA FİŞİ MODALI (REACT NATIVE ANIMATED) ---
+// --- YAZAR KASA FİŞİ MODALI ---
 const ReceiptModalRN = ({ visible, onClose, theme, isDark, data }: any) => {
   const translateY = useRef(
     new Animated.Value(-Dimensions.get("window").height),
@@ -943,7 +1065,6 @@ const ReceiptModalRN = ({ visible, onClose, theme, isDark, data }: any) => {
               ALPER - {data.ay} ÖZETİ
             </Text>
           </View>
-
           <View style={{ gap: 10 }}>
             <View
               style={{ flexDirection: "row", justifyContent: "space-between" }}
@@ -1034,7 +1155,6 @@ const ReceiptModalRN = ({ visible, onClose, theme, isDark, data }: any) => {
               </Text>
             </View>
           </View>
-
           <View
             style={{
               backgroundColor: "rgba(239,68,68,0.1)",
@@ -1064,7 +1184,6 @@ const ReceiptModalRN = ({ visible, onClose, theme, isDark, data }: any) => {
               -₺{data.enflasyonKaybi.toFixed(2)}
             </Text>
           </View>
-
           <View
             style={{
               flexDirection: "row",
@@ -1094,7 +1213,6 @@ const ReceiptModalRN = ({ visible, onClose, theme, isDark, data }: any) => {
               ₺{data.netSonuc.toFixed(2)}
             </Text>
           </View>
-
           <TouchableOpacity
             onPress={() => {
               onClose();
@@ -1341,4 +1459,30 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   walletChipText: { fontWeight: "600" },
+
+  // YENİ: GERİ AL BİLDİRİMİ (TOAST) STİLLERİ
+  toastContainer: {
+    position: "absolute",
+    bottom: 30,
+    left: 20,
+    right: 20,
+    padding: 15,
+    borderRadius: 12,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 6,
+  },
+  toastText: { color: "#fff", fontSize: 14, fontWeight: "500" },
+  undoBtn: {
+    backgroundColor: "#4f46e5",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  undoBtnText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
 });

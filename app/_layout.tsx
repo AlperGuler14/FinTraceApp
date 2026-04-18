@@ -10,7 +10,10 @@ import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
 import { ThemeProvider } from "../context/ThemeContext"; // TEMA MOTORUNU IMPORT ETTİK
-
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1, viewport-fit=cover"
+></meta>;
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {

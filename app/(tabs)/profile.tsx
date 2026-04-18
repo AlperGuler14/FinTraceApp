@@ -7,20 +7,23 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
-  ScrollView, // Switch eklendi
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { supabase } from "../../constants/Supabase";
-import { useTheme } from "../../context/ThemeContext"; // Tema Motoru eklendi
+import { useTheme } from "../../context/ThemeContext";
 
 const { width } = Dimensions.get("window");
 
-// Dinamik tema alan MenuItem
 const PremiumMenuItem = ({
   icon,
   title,
@@ -57,7 +60,6 @@ const PremiumMenuItem = ({
     >
       {title}
     </Text>
-    {/* Eğer sağda özel bir element (Örn: Switch) varsa onu göster, yoksa standart ok ikonunu göster */}
     {rightElement ? (
       rightElement
     ) : (
@@ -67,13 +69,34 @@ const PremiumMenuItem = ({
 );
 
 export default function ProfileScreen() {
-  const { isDark, toggleTheme, colors: theme } = useTheme(); // Temayı çekiyoruz
+  const { isDark, toggleTheme, colors: theme } = useTheme();
 
   const [userName, setUserName] = useState("Alper");
   const [userInitial, setUserInitial] = useState("A");
   const [monthlyTxCount, setMonthlyTxCount] = useState(0);
   const [activeWalletCount, setActiveWalletCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  const [archives, setArchives] = useState<any[]>([]);
+
+  // MODAL STATE'LERİ
+  const [isReceiptModalVisible, setReceiptModalVisible] = useState(false);
+  const [selectedArchive, setSelectedArchive] = useState<any>(null);
+
+  const [isPersonalInfoVisible, setPersonalInfoVisible] = useState(false);
+  const [editName, setEditName] = useState("");
+
+  const [isSecurityVisible, setSecurityVisible] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
+  const [isNotificationVisible, setNotificationVisible] = useState(false);
+  const [notifSettings, setNotifSettings] = useState({
+    budget: true,
+    monthly: true,
+    campaigns: false,
+  });
 
   const fetchProfileData = async () => {
     setLoading(true);
@@ -83,7 +106,7 @@ export default function ProfileScreen() {
 
       if (user) {
         const name =
-          user.user_metadata?.name || user.email?.split("@")[0] || "Alper";
+          user.user_metadata?.name || user.email?.split("@")[0] || "Kullanıcı";
         setUserName(name.charAt(0).toUpperCase() + name.slice(1));
         setUserInitial(name.charAt(0).toUpperCase());
       }
@@ -103,8 +126,14 @@ export default function ProfileScreen() {
 
       const { count: walletCount } = await supabase
         .from("wallets")
-        .select("*", { count: "exact", head: true }); // 'butceler' yerine 'wallets' tablosu kullanıldığı varsayıldı
+        .select("*", { count: "exact", head: true });
       if (walletCount !== null) setActiveWalletCount(walletCount);
+
+      const { data: archiveData } = await supabase
+        .from("reports_archive")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (archiveData) setArchives(archiveData);
     } catch (error) {
       console.error("Profil verisi çekilirken hata:", error);
     } finally {
@@ -118,32 +147,165 @@ export default function ProfileScreen() {
     }, []),
   );
 
-  const handleLogout = async () => {
-    Alert.alert(
-      "Güvenli Çıkış",
-      "Hesabından çıkış yapmak istediğine emin misin?",
-      [
-        { text: "Vazgeç", style: "cancel" },
-        {
-          text: "Çıkış Yap",
-          style: "destructive",
-          onPress: async () => {
-            const { error } = await supabase.auth.signOut();
-            if (error)
-              Alert.alert("Hata", "Çıkış yapılamadı: " + error.message);
-            else router.replace("/");
-          },
-        },
-      ],
+  // --- KESİN VE SORUNSUZ ÇIKIŞ FONKSİYONLARI ---
+  const executeLogout = async () => {
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      if (Platform.OS === "web") {
+        window.location.replace("/");
+      } else {
+        router.replace("/");
+      }
+    } catch (error: any) {
+      Alert.alert(
+        "Hata",
+        "Çıkış yapılırken bir sorun oluştu: " + error.message,
+      );
+    }
+  };
+
+  const handleLogout = () => {
+    if (Platform.OS === "web") {
+      const confirmed = window.confirm(
+        "Hesabından çıkış yapmak istediğine emin misin?",
+      );
+      if (confirmed) executeLogout();
+    } else {
+      Alert.alert(
+        "Güvenli Çıkış",
+        "Hesabından çıkış yapmak istediğine emin misin?",
+        [
+          { text: "Vazgeç", style: "cancel" },
+          { text: "Çıkış Yap", style: "destructive", onPress: executeLogout },
+        ],
+      );
+    }
+  };
+
+  // --- GÜNCELLEME FONKSİYONLARI ---
+  const handleUpdateName = async () => {
+    if (!editName.trim()) return Alert.alert("Hata", "İsim boş olamaz.");
+    setIsUpdating(true);
+    try {
+      const { error } = await supabase.auth.updateUser({
+        data: { name: editName.trim() },
+      });
+      if (error) throw error;
+      setUserName(editName.charAt(0).toUpperCase() + editName.slice(1));
+      setUserInitial(editName.charAt(0).toUpperCase());
+      setPersonalInfoVisible(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error: any) {
+      Alert.alert("Hata", error.message);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleUpdatePassword = async () => {
+    if (newPassword.length < 6)
+      return Alert.alert("Hata", "Şifre en az 6 karakter olmalıdır.");
+    if (newPassword !== confirmPassword)
+      return Alert.alert("Hata", "Girdiğiniz şifreler eşleşmiyor.");
+    setIsUpdating(true);
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+      if (error) throw error;
+      setSecurityVisible(false);
+      setNewPassword("");
+      setConfirmPassword("");
+      Alert.alert("Başarılı", "Şifreniz güvenli bir şekilde güncellendi.");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error: any) {
+      Alert.alert("Hata", error.message);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const openReceipt = (archiveData: any) => {
+    setSelectedArchive(archiveData);
+    setReceiptModalVisible(true);
+  };
+
+  const HistoricalReceiptModal = () => {
+    if (!selectedArchive) return null;
+    const netDurum =
+      selectedArchive.total_income - selectedArchive.total_expense;
+
+    return (
+      <Modal visible={isReceiptModalVisible} transparent animationType="fade">
+        <View style={styles.receiptOverlay}>
+          <View style={styles.receiptCard}>
+            <Text style={styles.receiptLogo}>FINTRACE</Text>
+            <Text style={styles.receiptSubtitle}>
+              {selectedArchive.month_name.toUpperCase()} ÖZET FİŞİ
+            </Text>
+            <View style={styles.receiptDashedLine} />
+            <View style={styles.receiptRow}>
+              <Text style={styles.receiptText}>(+) Gelirler</Text>
+              <Text style={[styles.receiptText, { color: "#10b981" }]}>
+                ₺
+                {Number(selectedArchive.total_income).toLocaleString("tr-TR", {
+                  minimumFractionDigits: 2,
+                })}
+              </Text>
+            </View>
+            <View style={styles.receiptRow}>
+              <Text style={styles.receiptText}>(-) Giderler</Text>
+              <Text style={[styles.receiptText, { color: "#ef4444" }]}>
+                ₺
+                {Number(selectedArchive.total_expense).toLocaleString("tr-TR", {
+                  minimumFractionDigits: 2,
+                })}
+              </Text>
+            </View>
+            <View style={styles.receiptRow}>
+              <Text style={styles.receiptText}>Sağlık Skoru</Text>
+              <Text style={[styles.receiptText, { fontWeight: "bold" }]}>
+                %{selectedArchive.health_score}
+              </Text>
+            </View>
+            <View style={styles.receiptDashedLine} />
+            <View style={styles.receiptRow}>
+              <Text
+                style={{ fontWeight: "bold", fontSize: 16, color: "#1f2937" }}
+              >
+                NET DURUM
+              </Text>
+              <Text
+                style={{
+                  fontWeight: "bold",
+                  fontSize: 16,
+                  color: netDurum >= 0 ? "#10b981" : "#ef4444",
+                }}
+              >
+                ₺
+                {netDurum.toLocaleString("tr-TR", { minimumFractionDigits: 2 })}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.archiveBtn, { backgroundColor: theme.primary }]}
+              onPress={() => setReceiptModalVisible(false)}
+            >
+              <Text style={styles.archiveBtnText}>FİŞİ KAPAT</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     );
   };
 
   return (
     <View style={[styles.mainContainer, { backgroundColor: theme.bg }]}>
-      <StatusBar barStyle="light-content" />{" "}
-      {/* Header gradient mavi olduğu için statüs barı beyaz */}
+      <StatusBar barStyle="light-content" />
       <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-        {/* Üst Renk Geçişi - Burası hep canlı mavi kalacak */}
         <LinearGradient
           colors={["#3730a3", "#4f46e5"]}
           style={styles.headerGradient}
@@ -167,13 +329,14 @@ export default function ProfileScreen() {
         </LinearGradient>
 
         <View style={[styles.contentContainer, { backgroundColor: theme.bg }]}>
-          {/* İstatistikler */}
           <View
             style={[
               styles.statsRow,
               {
                 backgroundColor: theme.cardBg,
                 shadowColor: isDark ? "#000" : "#cbd5e1",
+                borderWidth: isDark ? 1 : 0,
+                borderColor: theme.border,
               },
             ]}
           >
@@ -206,7 +369,114 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          {/* HESAP AYARLARI */}
+          <Text style={[styles.sectionTitle, { color: theme.textSub }]}>
+            FİNANSAL ARŞİVİM
+          </Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={{ marginBottom: 30 }}
+            contentContainerStyle={{ paddingRight: 20 }}
+          >
+            {archives.length > 0 ? (
+              archives.map((item, index) => (
+                <View
+                  key={index}
+                  style={[
+                    styles.archiveCard,
+                    {
+                      backgroundColor: theme.cardBg,
+                      borderColor: theme.border,
+                    },
+                  ]}
+                >
+                  <LinearGradient
+                    colors={["#4f46e5", "#3730a3"]}
+                    style={styles.archiveHeader}
+                  >
+                    <Text style={styles.archiveMonth}>{item.month_name}</Text>
+                  </LinearGradient>
+                  <View style={styles.archiveBody}>
+                    <View style={styles.archiveRow}>
+                      <Text
+                        style={{
+                          color: theme.textSub,
+                          fontSize: 12,
+                          fontFamily: "Inter_500Medium",
+                        }}
+                      >
+                        Sağlık Skoru
+                      </Text>
+                      <Text
+                        style={{
+                          color: item.health_score > 70 ? "#10b981" : "#ef4444",
+                          fontFamily: "Inter_700Bold",
+                        }}
+                      >
+                        %{item.health_score}
+                      </Text>
+                    </View>
+                    <View style={styles.archiveRow}>
+                      <Text
+                        style={{
+                          color: theme.textSub,
+                          fontSize: 12,
+                          fontFamily: "Inter_500Medium",
+                        }}
+                      >
+                        Gider
+                      </Text>
+                      <Text
+                        style={{
+                          color: theme.textMain,
+                          fontFamily: "Inter_700Bold",
+                        }}
+                      >
+                        ₺{Number(item.total_expense).toLocaleString("tr-TR")}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.viewOldBtn,
+                        { backgroundColor: theme.iconBg },
+                      ]}
+                      onPress={() => openReceipt(item)}
+                    >
+                      <Text
+                        style={[styles.viewOldText, { color: theme.textMain }]}
+                      >
+                        Detaylı Fiş
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))
+            ) : (
+              <View
+                style={[
+                  styles.emptyArchiveCard,
+                  { backgroundColor: theme.cardBg, borderColor: theme.border },
+                ]}
+              >
+                <Feather
+                  name="file-text"
+                  size={24}
+                  color={theme.textSub}
+                  style={{ marginBottom: 8 }}
+                />
+                <Text
+                  style={{
+                    color: theme.textSub,
+                    fontFamily: "Inter_500Medium",
+                    fontSize: 12,
+                  }}
+                >
+                  Henüz arşivlenmiş fişin yok.
+                </Text>
+              </View>
+            )}
+          </ScrollView>
+
           <Text style={[styles.sectionTitle, { color: theme.textSub }]}>
             HESAP AYARLARI
           </Text>
@@ -224,12 +494,10 @@ export default function ProfileScreen() {
               theme={theme}
               icon="user"
               title="Kişisel Bilgiler"
-              onPress={() =>
-                Alert.alert(
-                  "Yakında",
-                  "Kişisel bilgi düzenleme ekranı eklenecek.",
-                )
-              }
+              onPress={() => {
+                setEditName(userName);
+                setPersonalInfoVisible(true);
+              }}
             />
             <View
               style={[styles.menuDivider, { backgroundColor: theme.border }]}
@@ -238,9 +506,7 @@ export default function ProfileScreen() {
               theme={theme}
               icon="shield"
               title="Güvenlik ve Şifre"
-              onPress={() =>
-                Alert.alert("Yakında", "Şifre değiştirme ekranı eklenecek.")
-              }
+              onPress={() => setSecurityVisible(true)}
             />
             <View
               style={[styles.menuDivider, { backgroundColor: theme.border }]}
@@ -249,13 +515,10 @@ export default function ProfileScreen() {
               theme={theme}
               icon="bell"
               title="Bildirim Tercihleri"
-              onPress={() =>
-                Alert.alert("Yakında", "Bildirim ayarları ekranı eklenecek.")
-              }
+              onPress={() => setNotificationVisible(true)}
             />
           </View>
 
-          {/* UYGULAMA AYARLARI */}
           <Text style={[styles.sectionTitle, { color: theme.textSub }]}>
             UYGULAMA
           </Text>
@@ -269,22 +532,20 @@ export default function ProfileScreen() {
               },
             ]}
           >
-            {/* KARANLIK MOD ANAHTARI BURADA */}
             <PremiumMenuItem
               theme={theme}
               icon={isDark ? "moon" : "sun"}
               title="Karanlık Mod"
-              onPress={toggleTheme} // Satıra tıklanınca da değişir
+              onPress={toggleTheme}
               rightElement={
                 <Switch
                   trackColor={{ false: "#767577", true: theme.primary }}
-                  thumbColor={"#f4f3f4"}
+                  thumbColor={"#ffffff"}
                   onValueChange={toggleTheme}
                   value={isDark}
                 />
               }
             />
-
             <View
               style={[styles.menuDivider, { backgroundColor: theme.border }]}
             />
@@ -310,12 +571,285 @@ export default function ProfileScreen() {
               onPress={handleLogout}
             />
           </View>
-
           <Text style={[styles.versionText, { color: theme.textSub }]}>
             FinTrace v1.0.0
           </Text>
+          <View style={{ height: 100 }} />
         </View>
       </ScrollView>
+
+      <Modal
+        visible={isPersonalInfoVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1, backgroundColor: theme.bg }}
+        >
+          <View
+            style={[styles.modalHeader, { borderBottomColor: theme.border }]}
+          >
+            <Text style={[styles.modalTitle, { color: theme.textMain }]}>
+              Kişisel Bilgiler
+            </Text>
+            <TouchableOpacity onPress={() => setPersonalInfoVisible(false)}>
+              <Feather name="x" size={24} color={theme.textSub} />
+            </TouchableOpacity>
+          </View>
+          <View style={{ padding: 20 }}>
+            <Text
+              style={{
+                color: theme.textSub,
+                marginBottom: 8,
+                fontWeight: "600",
+                marginLeft: 4,
+              }}
+            >
+              Görünen Adın
+            </Text>
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  color: theme.textMain,
+                },
+              ]}
+              value={editName}
+              onChangeText={setEditName}
+              placeholder="Adını gir..."
+              placeholderTextColor={theme.textSub}
+            />
+            <TouchableOpacity
+              style={[styles.saveBtn, { backgroundColor: theme.textMain }]}
+              onPress={handleUpdateName}
+              disabled={isUpdating}
+            >
+              {isUpdating ? (
+                <ActivityIndicator color={theme.bg} />
+              ) : (
+                <Text style={[styles.saveBtnText, { color: theme.bg }]}>
+                  Bilgileri Kaydet
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={isSecurityVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1, backgroundColor: theme.bg }}
+        >
+          <View
+            style={[styles.modalHeader, { borderBottomColor: theme.border }]}
+          >
+            <Text style={[styles.modalTitle, { color: theme.textMain }]}>
+              Güvenlik ve Şifre
+            </Text>
+            <TouchableOpacity onPress={() => setSecurityVisible(false)}>
+              <Feather name="x" size={24} color={theme.textSub} />
+            </TouchableOpacity>
+          </View>
+          <View style={{ padding: 20 }}>
+            <Text
+              style={{
+                color: theme.textSub,
+                marginBottom: 8,
+                fontWeight: "600",
+                marginLeft: 4,
+              }}
+            >
+              Yeni Şifre
+            </Text>
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  color: theme.textMain,
+                },
+              ]}
+              value={newPassword}
+              onChangeText={setNewPassword}
+              placeholder="En az 6 karakter..."
+              placeholderTextColor={theme.textSub}
+              secureTextEntry
+            />
+            <Text
+              style={{
+                color: theme.textSub,
+                marginBottom: 8,
+                fontWeight: "600",
+                marginLeft: 4,
+              }}
+            >
+              Şifreyi Doğrula
+            </Text>
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  color: theme.textMain,
+                },
+              ]}
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              placeholder="Şifreyi tekrar gir..."
+              placeholderTextColor={theme.textSub}
+              secureTextEntry
+            />
+            <TouchableOpacity
+              style={[styles.saveBtn, { backgroundColor: theme.textMain }]}
+              onPress={handleUpdatePassword}
+              disabled={isUpdating}
+            >
+              {isUpdating ? (
+                <ActivityIndicator color={theme.bg} />
+              ) : (
+                <Text style={[styles.saveBtnText, { color: theme.bg }]}>
+                  Şifreyi Güncelle
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={isNotificationVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <View style={{ flex: 1, backgroundColor: theme.bg }}>
+          <View
+            style={[styles.modalHeader, { borderBottomColor: theme.border }]}
+          >
+            <Text style={[styles.modalTitle, { color: theme.textMain }]}>
+              Bildirim Tercihleri
+            </Text>
+            <TouchableOpacity onPress={() => setNotificationVisible(false)}>
+              <Feather name="x" size={24} color={theme.textSub} />
+            </TouchableOpacity>
+          </View>
+          <View style={{ padding: 20 }}>
+            <View
+              style={[
+                styles.notifRow,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  borderWidth: isDark ? 1 : 0,
+                },
+              ]}
+            >
+              <View>
+                <Text
+                  style={{
+                    fontSize: 16,
+                    fontWeight: "bold",
+                    color: theme.textMain,
+                  }}
+                >
+                  Aylık Özet Raporları
+                </Text>
+                <Text
+                  style={{ fontSize: 12, color: theme.textSub, marginTop: 4 }}
+                >
+                  Ay sonunda finansal sağlığını bildirir.
+                </Text>
+              </View>
+              <Switch
+                trackColor={{ false: "#767577", true: theme.primary }}
+                value={notifSettings.monthly}
+                onValueChange={(val) =>
+                  setNotifSettings({ ...notifSettings, monthly: val })
+                }
+              />
+            </View>
+            <View
+              style={[
+                styles.notifRow,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  borderWidth: isDark ? 1 : 0,
+                },
+              ]}
+            >
+              <View>
+                <Text
+                  style={{
+                    fontSize: 16,
+                    fontWeight: "bold",
+                    color: theme.textMain,
+                  }}
+                >
+                  Zarf (Bütçe) Aşımı
+                </Text>
+                <Text
+                  style={{ fontSize: 12, color: theme.textSub, marginTop: 4 }}
+                >
+                  Bir zarf limitini geçtiğinde uyarır.
+                </Text>
+              </View>
+              <Switch
+                trackColor={{ false: "#767577", true: "#ef4444" }}
+                value={notifSettings.budget}
+                onValueChange={(val) =>
+                  setNotifSettings({ ...notifSettings, budget: val })
+                }
+              />
+            </View>
+            <View
+              style={[
+                styles.notifRow,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  borderWidth: isDark ? 1 : 0,
+                },
+              ]}
+            >
+              <View>
+                <Text
+                  style={{
+                    fontSize: 16,
+                    fontWeight: "bold",
+                    color: theme.textMain,
+                  }}
+                >
+                  Uygulama Yenilikleri
+                </Text>
+                <Text
+                  style={{ fontSize: 12, color: theme.textSub, marginTop: 4 }}
+                >
+                  Yeni özellikler geldiğinde haber verir.
+                </Text>
+              </View>
+              <Switch
+                trackColor={{ false: "#767577", true: theme.primary }}
+                value={notifSettings.campaigns}
+                onValueChange={(val) =>
+                  setNotifSettings({ ...notifSettings, campaigns: val })
+                }
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <HistoricalReceiptModal />
     </View>
   );
 }
@@ -368,7 +902,6 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     marginLeft: 6,
   },
-
   contentContainer: {
     flex: 1,
     borderTopLeftRadius: 30,
@@ -392,7 +925,6 @@ const styles = StyleSheet.create({
   statValue: { fontSize: 22, fontFamily: "Inter_900Black", marginBottom: 4 },
   statLabel: { fontSize: 12, fontFamily: "Inter_500Medium" },
   statDivider: { width: 1 },
-
   sectionTitle: {
     fontSize: 12,
     fontFamily: "Inter_700Bold",
@@ -431,5 +963,128 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: "Inter_500Medium",
     marginTop: 10,
+  },
+  archiveCard: {
+    width: 160,
+    borderRadius: 20,
+    borderWidth: 1,
+    marginRight: 15,
+    overflow: "hidden",
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+  },
+  archiveHeader: { padding: 12, alignItems: "center" },
+  archiveMonth: { color: "#fff", fontFamily: "Inter_700Bold", fontSize: 14 },
+  archiveBody: { padding: 12 },
+  archiveRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  viewOldBtn: {
+    padding: 8,
+    borderRadius: 10,
+    alignItems: "center",
+    marginTop: 5,
+  },
+  viewOldText: { fontSize: 11, fontFamily: "Inter_700Bold" },
+  emptyArchiveCard: {
+    width: width - 40,
+    padding: 20,
+    borderRadius: 20,
+    borderWidth: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    borderStyle: "dashed",
+  },
+
+  receiptOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  receiptCard: {
+    width: width * 0.85,
+    backgroundColor: "#fdfbf7",
+    padding: 30,
+    borderRadius: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  receiptLogo: {
+    textAlign: "center",
+    fontSize: 24,
+    fontWeight: "900",
+    letterSpacing: 4,
+    color: "#1f2937",
+  },
+  receiptSubtitle: {
+    textAlign: "center",
+    fontSize: 12,
+    color: "#6b7280",
+    marginTop: 4,
+    letterSpacing: 1,
+  },
+  receiptDashedLine: {
+    borderBottomWidth: 1.5,
+    borderStyle: "dashed",
+    borderColor: "#d1d5db",
+    marginVertical: 20,
+  },
+  receiptRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginVertical: 6,
+  },
+  receiptText: {
+    fontSize: 15,
+    color: "#374151",
+    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+  },
+  archiveBtn: {
+    padding: 16,
+    borderRadius: 12,
+    alignItems: "center",
+    marginTop: 25,
+  },
+  archiveBtnText: { color: "#fff", fontWeight: "900", letterSpacing: 1 },
+
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 20,
+    borderBottomWidth: 1,
+  },
+  modalTitle: { fontSize: 18, fontWeight: "bold" },
+  input: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 15,
+    marginBottom: 20,
+    fontSize: 16,
+  },
+  saveBtn: {
+    padding: 16,
+    borderRadius: 14,
+    alignItems: "center",
+    marginTop: 10,
+  },
+  saveBtnText: { fontWeight: "bold", fontSize: 16 },
+  notifRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 16,
+    borderRadius: 16,
+    marginBottom: 12,
+    elevation: 1,
   },
 });
