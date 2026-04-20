@@ -1,4 +1,5 @@
 import { Feather } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect } from "expo-router";
@@ -18,13 +19,13 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { z } from "zod"; // ZOD IMPORT EKLENDİ
+import { z } from "zod";
 import { supabase } from "../../constants/Supabase";
 import { useTheme } from "../../context/ThemeContext";
 
 const { width } = Dimensions.get("window");
 
-// --- TİP TANIMLAMALARI ---
+// --- TİP VE DOĞRULAMA ---
 interface Transaction {
   id: string;
   amount: number;
@@ -34,22 +35,11 @@ interface Transaction {
   date: string;
 }
 
-// --- ZOD ŞEMASI (MANTIKSAL DOĞRULAMA KORUMASI) ---
 const transactionSchema = z.object({
-  amount: z
-    .number()
-    .positive("Tutar 0'dan büyük olmalıdır.")
-    .max(
-      1000000,
-      "Güvenlik: Tek seferde 1 Milyon ₺'den fazla işlem eklenemez.",
-    ),
-  desc: z
-    .string()
-    .min(3, "Açıklama çok kısa, neye harcadığını belirtmelisin.")
-    .max(50, "Açıklama çok uzun, lütfen daha kısa özetle."),
+  amount: z.number().positive("Tutar 0'dan büyük olmalıdır.").max(1000000),
+  desc: z.string().min(3).max(50),
 });
 
-// --- FİNANSAL SAĞLIK ALGORİTMASI ---
 const calculateFinancialScore = (
   income: number,
   expense: number,
@@ -122,9 +112,13 @@ export default function IntegratedAssistantDashboard() {
   const [monthlyIncome, setMonthlyIncome] = useState(0);
   const [monthlyExpense, setMonthlyExpense] = useState(0);
 
+  // --- RADAR STATE'LERİ ---
+  const [dueToday, setDueToday] = useState<any[]>([]);
+  const [dueTomorrow, setDueTomorrow] = useState<any[]>([]);
+
   const [healthData, setHealthData] = useState({
     score: 0,
-    message: "Verilerin analiz ediliyor...",
+    message: "Analiz ediliyor...",
     color: "#64748b",
     bgColor: "#f1f5f9",
   });
@@ -134,7 +128,6 @@ export default function IntegratedAssistantDashboard() {
   const [isGuideVisible, setIsGuideVisible] = useState(false);
   const [isReceiptVisible, setIsReceiptVisible] = useState(false);
 
-  // --- GERİ AL (UNDO) STATE VE REFERANSLARI ---
   const [undoData, setUndoData] = useState<{
     id: string;
     amount: number;
@@ -150,8 +143,97 @@ export default function IntegratedAssistantDashboard() {
     today.getMonth() + 1,
     0,
   ).getDate();
-  const isMonthEnd = true; // Gerçekte: today.getDate() === lastDayOfMonth;
+  const isMonthEnd = today.getDate() === lastDayOfMonth; // Test için true yapabilirsin
 
+  // --- YENİ AY SIFIRLAMASI ---
+  const checkAndResetNewMonth = async () => {
+    try {
+      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+      const savedMonth = await AsyncStorage.getItem("@fintrace_last_month");
+
+      if (savedMonth && savedMonth !== currentMonthKey) {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (user) {
+          await supabase
+            .from("wallets")
+            .update({ spent: 0 })
+            .eq("user_id", user.id);
+          Alert.alert(
+            "Yeni Ay, Yeni Başlangıç! 🚀",
+            "Yeni aya girdik, zarflarındaki harcama tutarları sıfırlandı.",
+          );
+        }
+      }
+      await AsyncStorage.setItem("@fintrace_last_month", currentMonthKey);
+    } catch (e) {
+      console.log(e);
+    }
+  };
+
+  // --- RADAR KONTROLÜ ---
+  const checkRadar = async () => {
+    try {
+      const { data: subs } = await supabase.from("abonelikler").select("*");
+      if (subs) {
+        const tDay = today.getDate();
+
+        const tom = new Date();
+        tom.setDate(today.getDate() + 1);
+        const tomDay = tom.getDate();
+
+        // KRİTİK NOKTA: Bu ay ödediğimiz aboneliklerin listesini telefonun hafızasından çek
+        const currentMonthKey = `@paid_subs_${today.getFullYear()}_${today.getMonth()}`;
+        const paidData = await AsyncStorage.getItem(currentMonthKey);
+        const paidList = paidData ? JSON.parse(paidData) : [];
+
+        // Eğer aboneliğin ID'si 'paidList' içindeyse onu bir daha gösterme!
+        const unpaidSubs = subs.filter((s: any) => !paidList.includes(s.id));
+
+        setDueToday(unpaidSubs.filter((s: any) => s.odeme_gunu === tDay));
+        setDueTomorrow(unpaidSubs.filter((s: any) => s.odeme_gunu === tomDay));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handlePaySubscription = async (sub: any) => {
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+
+      // Gideri kaydet
+      const { error } = await supabase.from("islemler").insert([
+        {
+          tutar: -Math.abs(sub.tutar),
+          aciklama: `${sub.ad} Ödemesi`,
+          kategori_adi: "Abonelikler",
+          tarih: new Date().toISOString(),
+        },
+      ]);
+      if (error) throw error;
+
+      // KRİTİK NOKTA: Ödediğini bu ayın listesine yaz ki sayfayı yenileyince bir daha sormasın
+      const currentMonthKey = `@paid_subs_${today.getFullYear()}_${today.getMonth()}`;
+      const paidData = await AsyncStorage.getItem(currentMonthKey);
+      const paidList = paidData ? JSON.parse(paidData) : [];
+      paidList.push(sub.id);
+      await AsyncStorage.setItem(currentMonthKey, JSON.stringify(paidList));
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        "Ödeme Kaydedildi! ✅",
+        `${sub.ad} ödemesi giderlerine eklendi.`,
+      );
+
+      // Ekrandan hemen kaldır
+      setDueToday((prev) => prev.filter((item) => item.id !== sub.id));
+      fetchFinancialData();
+    } catch (e: any) {
+      Alert.alert("Hata", e.message);
+    }
+  };
   const fetchFinancialData = async () => {
     setLoading(true);
     try {
@@ -169,7 +251,6 @@ export default function IntegratedAssistantDashboard() {
           if (val > 0) inc += val;
           else exp += Math.abs(val);
         });
-
         setTotalBalance(inc - exp);
         setMonthlyIncome(inc);
         setMonthlyExpense(exp);
@@ -180,9 +261,9 @@ export default function IntegratedAssistantDashboard() {
           walletsData || [],
           txData,
         );
-        let msg = "";
-        let themeColor = "";
-        let themeBg = "";
+        let msg = "",
+          themeColor = "",
+          themeBg = "";
 
         if (calculatedScore >= 80) {
           msg =
@@ -227,19 +308,16 @@ export default function IntegratedAssistantDashboard() {
 
   useFocusEffect(
     useCallback(() => {
+      checkAndResetNewMonth();
       fetchFinancialData();
+      checkRadar();
     }, []),
   );
 
-  // --- GERİ AL (UNDO) FONKSİYONU ---
   const handleUndo = async () => {
     if (!undoData) return;
-
     try {
-      // İşlemi sil
       await supabase.from("islemler").delete().eq("id", undoData.id);
-
-      // Zarf harcamasından geri düş
       if (undoData.walletId) {
         const { data: wallet } = await supabase
           .from("wallets")
@@ -253,19 +331,16 @@ export default function IntegratedAssistantDashboard() {
             .eq("id", undoData.walletId);
         }
       }
-
       setShowUndoToast(false);
       setUndoData(null);
       if (undoTimeout.current) clearTimeout(undoTimeout.current);
       fetchFinancialData();
-
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error) {
-      console.error("Geri alma başarısız:", error);
+      console.error(error);
     }
   };
 
-  // İŞLEM BAŞARILI EKLENDİĞİNDE ÇALIŞACAK FONKSİYON
   const handleTransactionSuccess = (
     id: string,
     amount: number,
@@ -274,8 +349,6 @@ export default function IntegratedAssistantDashboard() {
     setUndoData({ id, amount, walletId });
     setShowUndoToast(true);
     if (undoTimeout.current) clearTimeout(undoTimeout.current);
-
-    // 5 Saniye sonra bildirimi kaldır
     undoTimeout.current = setTimeout(() => {
       setShowUndoToast(false);
       setUndoData(null);
@@ -287,18 +360,13 @@ export default function IntegratedAssistantDashboard() {
       <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
 
       {/* HEADER */}
-      <View
-        style={[
-          styles.headerArea,
-          { backgroundColor: theme.bg, borderBottomColor: theme.border },
-        ]}
-      >
+      <View style={[styles.headerArea, { borderBottomColor: theme.border }]}>
         <View>
           <Text style={[styles.greetingText, { color: theme.textSub }]}>
             Merhaba Alper,
           </Text>
           <Text style={[styles.statusText, { color: theme.textMain }]}>
-            Analizlerin Hazır ⚡
+            Finansal Durumun ⚡
           </Text>
         </View>
         <TouchableOpacity
@@ -319,40 +387,73 @@ export default function IntegratedAssistantDashboard() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* AY SONU BANNER */}
+        {/* ZAMAN MAKİNESİ BANNER */}
         {isMonthEnd && (
           <TouchableOpacity
             onPress={() => setIsReceiptVisible(true)}
-            style={{
-              flexDirection: "row",
-              backgroundColor: isDark ? "rgba(245,158,11,0.2)" : "#fef3c7",
-              padding: 12,
-              borderRadius: 14,
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 15,
-              borderWidth: 1,
-              borderColor: "rgba(245,158,11,0.5)",
-            }}
+            style={styles.timeMachineBanner}
           >
-            <View style={{ flexDirection: "row", alignItems: "center" }}>
-              <Feather
-                name="calendar"
-                size={18}
-                color="#d97706"
-                style={{ marginRight: 10 }}
-              />
-              <Text
-                style={{ color: "#b45309", fontWeight: "bold", fontSize: 13 }}
-              >
-                Bugün ayın son günü. Geçmişle yüzleş!
-              </Text>
-            </View>
-            <Feather name="chevron-right" size={18} color="#d97706" />
+            <LinearGradient
+              colors={["#1e293b", "#0f172a"]}
+              style={styles.tmGradient}
+            >
+              <View style={styles.tmIconBox}>
+                <Feather name="clock" size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.tmTitle}>Zaman Makinesi Hazır!</Text>
+                <Text style={styles.tmSub}>
+                  Ay bitti. Bu ay neler yaptığını bir fişle gör.
+                </Text>
+              </View>
+              <Feather name="chevron-right" size={20} color="#fff" />
+            </LinearGradient>
           </TouchableOpacity>
         )}
 
-        {/* BAKİYE KARTI */}
+        {/* RADAR: BUGÜN */}
+        {dueToday.map((sub, i) => (
+          <View key={`today-${i}`} style={styles.alertCard}>
+            <LinearGradient
+              colors={["#f43f5e", "#e11d48"]}
+              style={styles.alertGradient}
+            >
+              <Feather name="alert-triangle" size={22} color="#fff" />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.alertTitle}>Bugün Ödeme Günü!</Text>
+                <Text style={styles.alertText}>
+                  {sub.ad} (₺{sub.tutar})
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.payBtn}
+                onPress={() => handlePaySubscription(sub)}
+              >
+                <Text style={styles.payBtnText}>Ödedim</Text>
+              </TouchableOpacity>
+            </LinearGradient>
+          </View>
+        ))}
+
+        {/* RADAR: YARIN */}
+        {dueTomorrow.map((sub, i) => (
+          <View key={`tom-${i}`} style={styles.warningCard}>
+            <LinearGradient
+              colors={["#f59e0b", "#d97706"]}
+              style={styles.alertGradient}
+            >
+              <Feather name="clock" size={22} color="#fff" />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.alertTitle}>Yarın Ödemen Var!</Text>
+                <Text style={styles.alertText}>
+                  {sub.ad} ödemesi yaklaşıyor (₺{sub.tutar}).
+                </Text>
+              </View>
+            </LinearGradient>
+          </View>
+        ))}
+
+        {/* BAKİYE */}
         <View
           style={[
             styles.balanceCard,
@@ -398,7 +499,7 @@ export default function IntegratedAssistantDashboard() {
           </View>
         </View>
 
-        {/* FİNANSAL SAĞLIK KARTI */}
+        {/* SAĞLIK SKORU */}
         <View
           style={[
             styles.healthCard,
@@ -431,7 +532,7 @@ export default function IntegratedAssistantDashboard() {
           </View>
         </View>
 
-        {/* HIZLI AKSİYONLAR */}
+        {/* AKSİYONLAR */}
         <View style={styles.quickActions}>
           {[
             {
@@ -543,7 +644,7 @@ export default function IntegratedAssistantDashboard() {
         <View style={{ height: 100 }} />
       </ScrollView>
 
-      {/* 5 SANİYELİK GERİ AL BİLDİRİMİ */}
+      {/* GERİ AL BİLDİRİMİ */}
       {showUndoToast && (
         <Animated.View
           style={[
@@ -571,8 +672,6 @@ export default function IntegratedAssistantDashboard() {
         theme={theme}
         isDark={isDark}
       />
-
-      {/* ZOD KORUMALI ADD TRANSACTION MODAL */}
       <AddTransactionModal
         visible={isAddModalVisible}
         onClose={() => setIsAddModalVisible(false)}
@@ -581,24 +680,18 @@ export default function IntegratedAssistantDashboard() {
         isDark={isDark}
         onSuccess={handleTransactionSuccess}
       />
-
-      {/* YAZAR KASA FİŞİ MODALI */}
       <ReceiptModalRN
         visible={isReceiptVisible}
         onClose={() => setIsReceiptVisible(false)}
         theme={theme}
         isDark={isDark}
         data={{
-          ay: new Date()
-            .toLocaleString("tr-TR", { month: "long" })
-            .toUpperCase(),
+          ay: today.toLocaleString("tr-TR", { month: "long" }).toUpperCase(),
           oncekiBakiye: totalBalance + monthlyExpense - monthlyIncome,
           gelir: monthlyIncome,
           gider: monthlyExpense,
           enCokHarcanan:
-            transactions.length > 0
-              ? transactions[0].category.toUpperCase()
-              : "VERİ YOK",
+            transactions.length > 0 ? transactions[0].category : "VERİ YOK",
           enflasyonKaybi: totalBalance > 0 ? totalBalance * 0.03 : 0,
           netSonuc: totalBalance,
         }}
@@ -607,7 +700,9 @@ export default function IntegratedAssistantDashboard() {
   );
 }
 
-// --- MODAL BİLEŞENLERİ ---
+// ==========================================
+// MODALLAR
+// ==========================================
 
 const GuideModal = ({ visible, onClose, theme, isDark }: any) => {
   const steps = [
@@ -710,9 +805,7 @@ const AiAssistantModal = ({ visible, onClose, theme, isDark }: any) => (
           <Text style={[styles.modalTitle, { color: theme.textMain }]}>
             FinTrace Zeka Asistanı
           </Text>
-          <Text style={styles.modalSub}>
-            Çevrimiçi • Verilerini Analiz Ediyor
-          </Text>
+          <Text style={styles.modalSub}>Çevrimiçi • Analiz Ediyor</Text>
         </View>
         <TouchableOpacity onPress={onClose}>
           <Feather name="x" size={24} color={theme.textSub} />
@@ -727,13 +820,12 @@ const AiAssistantModal = ({ visible, onClose, theme, isDark }: any) => (
         </View>
         <View style={styles.userBubble}>
           <Text style={styles.userText}>
-            MacBook hedefim için ne kadar daha biriktirmeliyim?
+            Hedefim için ne kadar daha biriktirmeliyim?
           </Text>
         </View>
         <View style={[styles.aiBubble, { backgroundColor: theme.cardBg }]}>
           <Text style={[styles.aiText, { color: theme.textMain }]}>
-            Mevcut tasarruf hızınla 3 ayda hedefine ulaşıyorsun. Eğer dışarıda
-            yemeyi azaltırsan bu süreyi öne çekebiliriz.
+            Mevcut tasarruf hızınla 3 ayda hedefine ulaşıyorsun.
           </Text>
         </View>
       </ScrollView>
@@ -758,13 +850,12 @@ const AiAssistantModal = ({ visible, onClose, theme, isDark }: any) => (
   </Modal>
 );
 
-// --- ZOD KORUMALI İŞLEM EKLEME MODALI ---
+// --- YENİLENMİŞ VE ORTALANMIŞ EKLEME MODALI ---
 const AddTransactionModal = ({
   visible,
   onClose,
   onRefresh,
   theme,
-  isDark,
   onSuccess,
 }: any) => {
   const [type, setType] = useState<"income" | "expense">("expense");
@@ -776,6 +867,7 @@ const AddTransactionModal = ({
   useEffect(() => {
     if (visible) fetchWallets();
   }, [visible]);
+
   const fetchWallets = async () => {
     const { data } = await supabase
       .from("wallets")
@@ -793,16 +885,18 @@ const AddTransactionModal = ({
     setAmount(Number(numericValue).toLocaleString("tr-TR"));
   };
 
+  const addQuickAmount = (val: number) => {
+    const currentAmount = Number(amount.replace(/\./g, "")) || 0;
+    setAmount((currentAmount + val).toLocaleString("tr-TR"));
+  };
+
   const handleSave = async () => {
     try {
       const rawAmount = Number(amount.replace(/\./g, ""));
       transactionSchema.parse({ amount: rawAmount, desc: desc.trim() });
-
       if (type === "expense" && !selectedWallet)
         throw new Error("Lütfen bu harcamanın düşeceği zarfı seçin.");
-
       const isExpense = type === "expense";
-      // ID'yi almak için .select() ekledik
       const { data: newTx, error: txError } = await supabase
         .from("islemler")
         .insert([
@@ -814,26 +908,20 @@ const AddTransactionModal = ({
           },
         ])
         .select();
-
       if (txError) throw txError;
-
       if (isExpense && selectedWallet) {
         await supabase
           .from("wallets")
           .update({ spent: Number(selectedWallet.spent || 0) + rawAmount })
           .eq("id", selectedWallet.id);
       }
-
       setAmount("");
       setDesc("");
       setSelectedWallet(null);
       onRefresh();
       onClose();
-
-      // Başarılı olduğunda Geri Al bildirimi için veriyi gönder
-      if (onSuccess && newTx) {
+      if (onSuccess && newTx)
         onSuccess(newTx[0].id, rawAmount, isExpense ? selectedWallet.id : null);
-      }
     } catch (error: any) {
       if (error instanceof z.ZodError)
         Alert.alert("Geçersiz Veri", error.errors[0].message);
@@ -841,148 +929,171 @@ const AddTransactionModal = ({
     }
   };
 
+  const saveBtnColor = type === "expense" ? "#ef4444" : "#10b981";
+
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      presentationStyle="pageSheet"
-    >
-      <View style={[styles.modalContent, { backgroundColor: theme.bg }]}>
-        <View style={[styles.modalHeader, { borderBottomColor: theme.border }]}>
-          <Text style={[styles.modalTitle, { color: theme.textMain }]}>
-            Yeni İşlem
-          </Text>
-          <TouchableOpacity onPress={onClose}>
-            <Feather name="x" size={24} color={theme.textSub} />
-          </TouchableOpacity>
-        </View>
-        <ScrollView style={{ padding: 20 }} keyboardShouldPersistTaps="handled">
+    <Modal visible={visible} animationType="fade" transparent={true}>
+      <View style={styles.modalOverlay}>
+        <View style={[styles.centeredModalCard, { backgroundColor: theme.bg }]}>
           <View
-            style={[styles.typeSelector, { backgroundColor: theme.iconBg }]}
+            style={[styles.modalHeader, { borderBottomColor: theme.border }]}
           >
-            <TouchableOpacity
-              style={[
-                styles.typeBtn,
-                type === "expense" && styles.typeBtnActiveExpense,
-              ]}
-              onPress={() => setType("expense")}
-            >
-              <Text
-                style={[
-                  styles.typeText,
-                  type === "expense" && { color: "#fff" },
-                ]}
-              >
-                Gider
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.typeBtn,
-                type === "income" && styles.typeBtnActiveIncome,
-              ]}
-              onPress={() => setType("income")}
-            >
-              <Text
-                style={[
-                  styles.typeText,
-                  type === "income" && { color: "#fff" },
-                ]}
-              >
-                Gelir
-              </Text>
+            <Text style={[styles.modalTitle, { color: theme.textMain }]}>
+              Yeni İşlem
+            </Text>
+            <TouchableOpacity onPress={onClose} style={styles.closeIconBtn}>
+              <Feather name="x" size={22} color={theme.textSub} />
             </TouchableOpacity>
           </View>
-          <TextInput
-            placeholder="Tutar (₺)"
-            style={[
-              styles.input,
-              {
-                backgroundColor: theme.cardBg,
-                borderColor: theme.border,
-                color: theme.textMain,
-                fontSize: 24,
-                fontWeight: "bold",
-              },
-            ]}
-            placeholderTextColor={theme.textSub}
-            keyboardType="number-pad"
-            value={amount}
-            onChangeText={handleAmountChange}
-          />
-          <TextInput
-            placeholder="Nereye harcadın? (En az 3 harf)"
-            style={[
-              styles.input,
-              {
-                backgroundColor: theme.cardBg,
-                borderColor: theme.border,
-                color: theme.textMain,
-              },
-            ]}
-            placeholderTextColor={theme.textSub}
-            value={desc}
-            onChangeText={setDesc}
-            maxLength={50}
-          />
-          {type === "expense" && (
-            <View style={styles.walletSection}>
-              <Text
-                style={[styles.walletSectionTitle, { color: theme.textMain }]}
-              >
-                Hangi Zarftan Düşülecek?
-              </Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={{ marginTop: 10, paddingBottom: 10 }}
-              >
-                {wallets.map((w) => (
-                  <TouchableOpacity
-                    key={w.id}
-                    style={[
-                      styles.walletChip,
-                      {
-                        backgroundColor: theme.cardBg,
-                        borderColor: theme.border,
-                      },
-                      selectedWallet?.id === w.id && {
-                        backgroundColor: theme.primary,
-                        borderColor: theme.primary,
-                      },
-                    ]}
-                    onPress={() => setSelectedWallet(w)}
-                  >
-                    <Text
-                      style={[
-                        styles.walletChipText,
-                        { color: theme.textMain },
-                        selectedWallet?.id === w.id && { color: "#fff" },
-                      ]}
-                    >
-                      {w.name}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-          )}
-          <TouchableOpacity
-            onPress={handleSave}
-            style={[styles.saveBtn, { backgroundColor: theme.textMain }]}
+          <ScrollView
+            style={{ padding: 20 }}
+            keyboardShouldPersistTaps="handled"
           >
-            <Text style={[styles.saveBtnText, { color: theme.bg }]}>
-              İşlemi Kaydet
-            </Text>
-          </TouchableOpacity>
-        </ScrollView>
+            <View
+              style={[styles.typeSelector, { backgroundColor: theme.iconBg }]}
+            >
+              <TouchableOpacity
+                style={[
+                  styles.typeBtn,
+                  type === "expense" && styles.typeBtnActiveExpense,
+                ]}
+                onPress={() => setType("expense")}
+              >
+                <Text
+                  style={[
+                    styles.typeText,
+                    type === "expense" && { color: "#fff" },
+                  ]}
+                >
+                  Gider
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.typeBtn,
+                  type === "income" && styles.typeBtnActiveIncome,
+                ]}
+                onPress={() => setType("income")}
+              >
+                <Text
+                  style={[
+                    styles.typeText,
+                    type === "income" && { color: "#fff" },
+                  ]}
+                >
+                  Gelir
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              placeholder="Tutar (₺)"
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  color: theme.textMain,
+                  fontSize: 24,
+                  fontWeight: "bold",
+                  textAlign: "center",
+                },
+              ]}
+              placeholderTextColor={theme.textSub}
+              keyboardType="number-pad"
+              value={amount}
+              onChangeText={handleAmountChange}
+            />
+            <View style={styles.quickAddRow}>
+              {[50, 100, 200, 500].map((val) => (
+                <TouchableOpacity
+                  key={val}
+                  style={[
+                    styles.quickAddBtn,
+                    { backgroundColor: theme.iconBg },
+                  ]}
+                  onPress={() => addQuickAmount(val)}
+                >
+                  <Text
+                    style={[styles.quickAddText, { color: theme.textMain }]}
+                  >
+                    +{val}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TextInput
+              placeholder="Nereye harcadın? (En az 3 harf)"
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.border,
+                  color: theme.textMain,
+                },
+              ]}
+              placeholderTextColor={theme.textSub}
+              value={desc}
+              onChangeText={setDesc}
+              maxLength={50}
+            />
+            {type === "expense" && (
+              <View style={styles.walletSection}>
+                <Text
+                  style={[styles.walletSectionTitle, { color: theme.textMain }]}
+                >
+                  Hangi Zarftan Düşülecek?
+                </Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={{ marginTop: 10, paddingBottom: 10 }}
+                >
+                  {wallets.map((w) => (
+                    <TouchableOpacity
+                      key={w.id}
+                      style={[
+                        styles.walletChip,
+                        {
+                          backgroundColor: theme.cardBg,
+                          borderColor: theme.border,
+                        },
+                        selectedWallet?.id === w.id && {
+                          backgroundColor: saveBtnColor,
+                          borderColor: saveBtnColor,
+                        },
+                      ]}
+                      onPress={() => setSelectedWallet(w)}
+                    >
+                      <Text
+                        style={[
+                          styles.walletChipText,
+                          { color: theme.textMain },
+                          selectedWallet?.id === w.id && { color: "#fff" },
+                        ]}
+                      >
+                        {w.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+            <TouchableOpacity
+              onPress={handleSave}
+              style={[styles.saveBtn, { backgroundColor: saveBtnColor }]}
+            >
+              <Text style={[styles.saveBtnText, { color: "#fff" }]}>
+                {type === "expense" ? "Gideri Kaydet" : "Geliri Kaydet"}
+              </Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
       </View>
     </Modal>
   );
 };
 
-// --- YAZAR KASA FİŞİ MODALI ---
-const ReceiptModalRN = ({ visible, onClose, theme, isDark, data }: any) => {
+const ReceiptModalRN = ({ visible, onClose, data }: any) => {
   const translateY = useRef(
     new Animated.Value(-Dimensions.get("window").height),
   ).current;
@@ -1232,6 +1343,12 @@ const ReceiptModalRN = ({ visible, onClose, theme, isDark, data }: any) => {
               ZAMAN MAKİNESİNE GEÇ
             </Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onClose}
+            style={{ alignItems: "center", marginTop: 15 }}
+          >
+            <Text style={{ color: "#666", fontSize: 12 }}>Kapat</Text>
+          </TouchableOpacity>
         </Animated.View>
       </View>
     </Modal>
@@ -1247,37 +1364,71 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    borderBottomWidth: 1,
   },
-  greetingText: { fontSize: 13 },
-  statusText: { fontSize: 18, fontWeight: "900" },
+  greetingText: { fontSize: 13, fontWeight: "500" },
+  statusText: { fontSize: 20, fontWeight: "900" },
   aiBtn: { borderRadius: 12, overflow: "hidden" },
   aiGradient: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 15,
+    paddingVertical: 10,
     flexDirection: "row",
     alignItems: "center",
   },
-  aiText: { color: "#fff", fontWeight: "bold", marginLeft: 6 },
+  aiText: { color: "#fff", fontWeight: "bold", marginLeft: 8 },
   scrollContent: { padding: 20 },
+
+  timeMachineBanner: {
+    marginBottom: 20,
+    borderRadius: 20,
+    overflow: "hidden",
+    elevation: 5,
+  },
+  tmGradient: { flexDirection: "row", alignItems: "center", padding: 18 },
+  tmIconBox: {
+    width: 44,
+    height: 44,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    borderRadius: 12,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 15,
+  },
+  tmTitle: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  tmSub: { color: "rgba(255,255,255,0.7)", fontSize: 12, marginTop: 2 },
+
+  alertCard: { marginBottom: 12, borderRadius: 18, overflow: "hidden" },
+  warningCard: { marginBottom: 12, borderRadius: 18, overflow: "hidden" },
+  alertGradient: { flexDirection: "row", alignItems: "center", padding: 16 },
+  alertTitle: { color: "#fff", fontSize: 14, fontWeight: "800" },
+  alertText: { color: "#fff", fontSize: 12, opacity: 0.9, marginTop: 2 },
+  payBtn: {
+    backgroundColor: "#fff",
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  payBtnText: { color: "#e11d48", fontWeight: "bold", fontSize: 13 },
+
   balanceCard: {
-    borderRadius: 24,
+    borderRadius: 28,
     padding: 25,
     alignItems: "center",
-    elevation: 2,
-    marginBottom: 15,
+    elevation: 4,
+    marginBottom: 25,
   },
-  balanceLabel: { fontSize: 13, marginBottom: 8 },
-  balanceAmount: { fontSize: 32, fontWeight: "900" },
+  balanceLabel: { fontSize: 14, marginBottom: 10 },
+  balanceAmount: { fontSize: 36, fontWeight: "900" },
   summaryRow: {
     flexDirection: "row",
-    marginTop: 15,
+    marginTop: 20,
     borderTopWidth: 1,
-    paddingTop: 15,
+    paddingTop: 20,
     width: "100%",
     justifyContent: "center",
   },
   summaryItem: { flexDirection: "row", alignItems: "center" },
-  summaryText: { fontSize: 12, fontWeight: "600", marginLeft: 4 },
+  summaryText: { fontSize: 13, fontWeight: "600", marginLeft: 6 },
   healthCard: {
     flexDirection: "row",
     borderRadius: 20,
@@ -1303,39 +1454,40 @@ const styles = StyleSheet.create({
   quickActions: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 30,
+    marginBottom: 35,
   },
   actionBtn: { alignItems: "center", width: width / 4 - 15 },
   actionIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 18,
+    width: 55,
+    height: 55,
+    borderRadius: 20,
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 8,
+    marginBottom: 10,
   },
-  actionLabel: { fontSize: 11, fontWeight: "600" },
+  actionLabel: { fontSize: 12, fontWeight: "700" },
   sectionTitle: { fontSize: 18, fontWeight: "900", marginBottom: 15 },
   txItem: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: 16,
-    borderRadius: 18,
-    marginBottom: 10,
+    padding: 18,
+    borderRadius: 22,
+    marginBottom: 12,
   },
   txLeft: { flexDirection: "row", alignItems: "center", flex: 1 },
   txIconBox: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 45,
+    height: 45,
+    borderRadius: 14,
     justifyContent: "center",
     alignItems: "center",
     marginRight: 15,
   },
-  txCategory: { fontSize: 15, fontWeight: "700" },
-  txDesc: { fontSize: 12 },
-  txAmount: { fontSize: 15, fontWeight: "900" },
+  txCategory: { fontSize: 16, fontWeight: "700" },
+  txDesc: { fontSize: 12, marginTop: 2 },
+  txAmount: { fontSize: 16, fontWeight: "900" },
+
   guideContainer: { flex: 1 },
   guideContent: { flex: 1, padding: 30, alignItems: "center", paddingTop: 80 },
   closeGuide: { position: "absolute", top: 50, right: 25, zIndex: 10 },
@@ -1366,6 +1518,39 @@ const styles = StyleSheet.create({
   },
   guideDoneGradient: { paddingVertical: 18, alignItems: "center" },
   guideDoneText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  centeredModalCard: {
+    width: "90%",
+    maxWidth: 500,
+    maxHeight: "85%",
+    borderRadius: 24,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  closeIconBtn: { padding: 5 },
+  quickAddRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 20,
+    gap: 8,
+  },
+  quickAddBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  quickAddText: { fontSize: 14, fontWeight: "700" },
   modalContent: { flex: 1 },
   modalHeader: {
     flexDirection: "row",
@@ -1459,8 +1644,6 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   walletChipText: { fontWeight: "600" },
-
-  // YENİ: GERİ AL BİLDİRİMİ (TOAST) STİLLERİ
   toastContainer: {
     position: "absolute",
     bottom: 30,

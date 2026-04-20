@@ -41,7 +41,6 @@ export default function ColorfulAnalyticsScreen() {
     "income" | "expense" | "savings" | "burn" | null
   >(null);
 
-  // FİŞ MODALI STATE'İ
   const [isReceiptVisible, setIsReceiptVisible] = useState(false);
 
   const [healthData, setHealthData] = useState({
@@ -132,7 +131,7 @@ export default function ColorfulAnalyticsScreen() {
 
         const savingsRate = inc > 0 ? ((inc - exp) / inc) * 100 : 0;
         const now = new Date();
-        const currentDay = now.getDate() || 1; // 0'a bölünme hatasını engellemek için
+        const currentDay = now.getDate() || 1;
         const dailyBurn = exp / currentDay;
         const remainingDays =
           new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() -
@@ -166,7 +165,6 @@ export default function ColorfulAnalyticsScreen() {
           );
         }
 
-        // Basit Sağlık Skoru Hesabı
         let calculatedScore = 85;
         if (exp > inc && inc > 0) calculatedScore = 30;
         else if (savingsRate < 10 && inc > 0) calculatedScore = 65;
@@ -315,7 +313,6 @@ export default function ColorfulAnalyticsScreen() {
     );
   };
 
-  // --- MOBİL UYUMLU HAREKETLİ FİŞ MODALI BİLEŞENİ ---
   const NativeReceiptModal = () => {
     const translateY = useRef(
       new Animated.Value(Dimensions.get("window").height),
@@ -348,27 +345,38 @@ export default function ColorfulAnalyticsScreen() {
       }
     }, [isReceiptVisible]);
 
+    // --- AKILLI ARŞİVLEME (UPSERT) ---
     const handleArchive = async () => {
       setIsArchiving(true);
-      const currentMonth = new Date().toLocaleString("tr-TR", {
-        month: "long",
-        year: "numeric",
-      });
-
       try {
-        const { error } = await supabase.from("reports_archive").insert([
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) throw new Error("Oturum bulunamadı.");
+
+        const currentMonth = new Date().toLocaleString("tr-TR", {
+          month: "long",
+          year: "numeric",
+        });
+
+        // .insert yerine .upsert kullanarak aynı ayın üzerine yazıyoruz
+        const { error } = await supabase.from("reports_archive").upsert(
           {
+            user_id: user.id,
             month_name: currentMonth,
             total_income: metrics.income,
             total_expense: metrics.expense,
             health_score: healthData.score,
             savings_rate: metrics.savingsRate,
           },
-        ]);
+          {
+            onConflict: "user_id, month_name", // Bu ikisi çakışırsa güncelleme yap
+          },
+        );
 
         if (error) throw error;
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert("Başarılı 🎉", "Fişiniz profil sayfasına arşivlendi!");
+        Alert.alert("Başarılı 🎉", "Fişiniz güncellendi ve arşivlendi!");
         setIsReceiptVisible(false);
       } catch (error: any) {
         Alert.alert("Hata", "Arşivlenirken bir sorun oluştu: " + error.message);
@@ -396,19 +404,15 @@ export default function ColorfulAnalyticsScreen() {
               { transform: [{ translateY }], opacity },
             ]}
           >
-            {/* Fiş Başlığı */}
             <Text style={styles.receiptLogo}>FINTRACE</Text>
             <Text style={styles.receiptSubtitle}>
               ALPER - {currentMonthLabel} ÖZETİ
             </Text>
             <View style={styles.receiptDashedLine} />
-
-            {/* Fiş Detayları */}
             <View style={styles.receiptRow}>
               <Text style={styles.receiptText}>Önceki Bakiye</Text>
               <Text style={styles.receiptText}>₺0.00</Text>
             </View>
-
             <View style={styles.receiptRow}>
               <Text style={styles.receiptText}>(+) Gelirler</Text>
               <Text style={[styles.receiptText, { color: "#10b981" }]}>
@@ -418,7 +422,6 @@ export default function ColorfulAnalyticsScreen() {
                 })}
               </Text>
             </View>
-
             <View style={styles.receiptRow}>
               <Text style={styles.receiptText}>(-) Giderler</Text>
               <Text style={[styles.receiptText, { color: "#ef4444" }]}>
@@ -428,8 +431,6 @@ export default function ColorfulAnalyticsScreen() {
                 })}
               </Text>
             </View>
-
-            {/* En Çok Harcanan */}
             <View
               style={{
                 marginTop: 15,
@@ -448,10 +449,7 @@ export default function ColorfulAnalyticsScreen() {
                 {enCokHarcanan}
               </Text>
             </View>
-
             <View style={styles.receiptDashedLine} />
-
-            {/* Gerçeklik Tokadı (Enflasyon) */}
             <View
               style={{
                 flexDirection: "row",
@@ -476,8 +474,6 @@ export default function ColorfulAnalyticsScreen() {
                 })}
               </Text>
             </View>
-
-            {/* Net Sonuç */}
             <View style={styles.receiptRow}>
               <Text
                 style={{ fontWeight: "bold", fontSize: 16, color: "#1f2937" }}
@@ -495,8 +491,6 @@ export default function ColorfulAnalyticsScreen() {
                 {netDurum.toLocaleString("tr-TR", { minimumFractionDigits: 2 })}
               </Text>
             </View>
-
-            {/* Aksiyon Butonları */}
             <TouchableOpacity
               style={styles.archiveBtn}
               onPress={handleArchive}
@@ -508,7 +502,6 @@ export default function ColorfulAnalyticsScreen() {
                 <Text style={styles.archiveBtnText}>ARŞİVLE VE KAPAT</Text>
               )}
             </TouchableOpacity>
-
             <TouchableOpacity
               style={{ marginTop: 15, alignItems: "center" }}
               onPress={() => setIsReceiptVisible(false)}
@@ -544,7 +537,6 @@ export default function ColorfulAnalyticsScreen() {
             <Feather name="share" size={18} color="#fff" />
           </TouchableOpacity>
         </View>
-
         {loading ? (
           <ActivityIndicator
             size="large"
@@ -600,7 +592,6 @@ export default function ColorfulAnalyticsScreen() {
                 </TouchableOpacity>
               ))}
             </View>
-
             <Text style={[styles.sectionHeader, { color: theme.textMain }]}>
               Aksiyon Planı
             </Text>
@@ -630,7 +621,6 @@ export default function ColorfulAnalyticsScreen() {
                 </View>
               ))}
             </ScrollView>
-
             <View
               style={[
                 styles.card,
@@ -673,8 +663,6 @@ export default function ColorfulAnalyticsScreen() {
                 ))}
               </View>
             </View>
-
-            {/* --- FİŞ KESME BUTONU --- */}
             <TouchableOpacity
               style={[styles.printBtn, { backgroundColor: theme.textMain }]}
               onPress={() => setIsReceiptVisible(true)}
@@ -684,8 +672,6 @@ export default function ColorfulAnalyticsScreen() {
                 Ay Sonu Fişini Kes
               </Text>
             </TouchableOpacity>
-
-            {/* ALT TAB BAR İÇİN NEFES ALMA BOŞLUĞU */}
             <View style={{ height: 120 }} />
           </>
         )}
@@ -697,8 +683,6 @@ export default function ColorfulAnalyticsScreen() {
       >
         {renderKpiDetailContent()}
       </Modal>
-
-      {/* NATIVE FİŞ MODALINI ÇAĞIR */}
       <NativeReceiptModal />
     </View>
   );
@@ -797,8 +781,6 @@ const styles = StyleSheet.create({
   },
   detailTitle: { fontSize: 15, fontWeight: "bold", marginBottom: 4 },
   detailText: { fontSize: 13, lineHeight: 20, fontWeight: "500" },
-
-  // FİŞ BUTONU VE MODAL STİLLERİ
   printBtn: {
     flexDirection: "row",
     alignItems: "center",
